@@ -1,0 +1,1 @@
+-define(NODES, [vNode_A, vNode_B]).
