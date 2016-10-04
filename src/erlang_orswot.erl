@@ -6,7 +6,8 @@
          remove_entry/2,
 	 get_data/1,
 	 merge/0,
-	 merge_nodes/2]).
+	 merge_nodes/2,
+	 reset_node/1]).
 
 -include("../include/erlang_orswot.hrl").
 
@@ -27,6 +28,9 @@ merge() ->
 merge_nodes(Node1, Node2) ->
     erlang_orswot_worker:merge(Node1, Node2),
     ok.
+
+reset_node(Node) ->
+    erlang_orswot_worker:reset(Node).
 
 go() ->
     %% ets:new(A,B),

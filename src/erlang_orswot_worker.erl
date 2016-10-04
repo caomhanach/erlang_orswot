@@ -16,7 +16,8 @@
          add_entry/2,
          remove_entry/2,
 	 get_data/1,
-	 merge/2]).
+	 merge/2,
+	 reset/1]).
 
 %% For debugging:
 -export([dump/0]).
@@ -38,7 +39,7 @@
 %%--------------------------------------------------------------------
 -define(SERVER, ?MODULE).
 -define(NAME(Id), list_to_atom(atom_to_list(Id) ++ "_worker")).
--define(VV_START_VERSION, 0).
+-define(VV_START_VERSION, 1).
 -define(ENTRY_START_VERSION, 1).
 -define(TIMEOUT, infinity). %% milliseconds | infinity
 -define(TABLE_NAME(Id), list_to_atom(atom_to_list(Id) ++ "_table").
@@ -74,12 +75,15 @@ remove_entry(Entry, Node) ->
 
 merge(ThisNode, ThatNode) ->
     ThatData = call(ThatNode, get_data),
+    io:format("ThatData: ~p~n", [ThatData]),
     call(ThisNode, {merge, ThatData}).
 
 get_data(Node) ->
     %% gen_server:call(get(id), get_data).
     call(Node, get_data).
 
+reset(Node) ->
+    call(Node, reset).
 
 %%--------------------------------------------------------------------
 %% @doc Start the server.
@@ -138,8 +142,9 @@ init([{id, Id}, {nodes, Nodes}]) when is_atom(Id) ->
 %% io:format("process_info: ~p~n", [process_info(self())]),
 %% io:format("registered: ~p~n", [registered()]),
     %% true = erlang:register(?NAME(Id), self()),
-NewMap = maps:new(),
-VV = maps:put(Id, ?VV_START_VERSION, NewMap),
+%% NewMap = maps:new(),
+VV = maps:new(),
+%% maps:put(Id, ?VV_START_VERSION, NewMap),
     {ok,
 #state{id=Id, nodes=Nodes, tid=Tid,
  version_vector=VV
@@ -170,7 +175,7 @@ VV = maps:put(Id, ?VV_START_VERSION, NewMap),
 handle_call({add, Entry}, _From, #state{id=Id, tid=Tid, version_vector=VersionVector}=State) ->
     io:format("State: ~p~n", [State]),
     NewVersionVector =
-	add(Entry, Id, Tid, VersionVector, ets:lookup(Tid, Entry)),
+        add(Entry, Id, Tid, VersionVector, ets:lookup(Tid, Entry)),
     NewState = State#state{version_vector=NewVersionVector},
     io:format("NewState: ~p~n", [NewState]),
 
@@ -178,14 +183,21 @@ handle_call({add, Entry}, _From, #state{id=Id, tid=Tid, version_vector=VersionVe
 handle_call({remove, Entry}, _From, #state{tid=Tid}=State) ->
     true = remove(Entry, Tid, ets:lookup(Tid, Entry)),
     {reply, ok, State};
-handle_call({merge, ThatData}, _From,
-	    #state{version_vector=VV, tid=Tid}=State) ->
-    NewState = merge_int(ThatData, VV, Tid),
+handle_call({merge, [{version_vector, OtherVV}, {entries, OtherEntries}]},
+            _From,
+            #state{version_vector=VV, tid=Tid}=State) ->
+    Entries = maps:from_list(ets:tab2list(Tid)),
+    io:format("Entries: ~p~n", [Entries]),
+    NewVV = merge_int(OtherVV, OtherEntries, VV, Entries, Tid),
     %% {reply, ok, NewState};
-    {reply, ok, State};
+    {reply, ok, State#state{version_vector=NewVV}};
 handle_call(get_data, _From,
-	    #state{tid=Tid, version_vector=VV}=State) ->
+            #state{tid=Tid, version_vector=VV}=State) ->
     {reply, get_data_int(Tid, VV), State};
+handle_call(reset, _From,
+            #state{tid=Tid}=State) ->
+    NewVV = reset_int(Tid),
+    {reply, ok, State#state{version_vector=NewVV}};
 %% handle_call(stop, _From, State) ->
 %%     {stop, normal, ok, State};
 %% handle_call(dump, _From, State) ->
@@ -263,9 +275,16 @@ code_change(_OldVsn, State, _Extra) ->
 call(Pid, Msg) ->
     gen_server:call(Pid, Msg, ?TIMEOUT).
 
-add(Entry, Id, Tid, VersionVector, []) ->
+add(Entry, Id, Tid, VersionVector, []) when map_size(VersionVector) == 0 ->
     true = ets:insert(Tid, {Entry, [{Id, ?ENTRY_START_VERSION}]}),
-    maps:update(Id, maps:get(Id, VersionVector) +1, VersionVector);
+    #{Id => ?VV_START_VERSION};
+add(Entry, Id, Tid, VersionVector, []) ->
+    io:format("Id : ~p~n", [Id]),
+    io:format("VersionVector: ~p~n", [VersionVector]),
+    Version = maps:get(Id, VersionVector),
+    true = ets:insert(Tid, {Entry, [{Id, Version+1}]}),
+    %% maps:update(Id, maps:get(Id, VersionVector) +1, VersionVector);
+    maps:update_with(Id, fun(X) -> X+1 end, ?VV_START_VERSION, VersionVector);
 add(_Entry, _Id, _Tid, VersionVector, _Existing) ->
     VersionVector.
 
@@ -274,15 +293,116 @@ remove(_Entry, _Tid, []) ->
 remove(Entry, Tid, _Existing) ->
     ets:delete(Tid, Entry).
 
-merge_int([{version_vector, OtherVV}, {entries, OtherEntries}],
-	  VV, Tid) ->
-    io:format("merge_int~nOtherVV: ~p~n", [OtherVV]),
+%% merge_int(OtherVV, _OtherEntries, OurVV, _OurEntries, _Tid)
+%%   when map_size(OurVV) == 0,
+%%        map_size(OtherVV) == 0 ->
+merge_int(OtherVV, OtherEntries, OtherVV, OtherEntries, _Tid) ->
+    %% case 1: our data is identical to their data
+    %% This includes the case where neither side
+    %% has add/remove history (everything is empty)
+    io:format("merge_int, both identical~n"),
+    OtherVV;
+merge_int(OtherVV, OtherEntries, OurVV, _OurEntries, Tid)
+  when map_size(OurVV) == 0 ->
+    %% case 2: we have no add/remove history, but they do
+    io:format("merge_int, empty us~n"),
+    io:format("OtherVV: ~p~n", [OtherVV]),
     io:format("OtherEntries: ~p~n", [OtherEntries]),
-    Entries = maps:from_list(ets:tab2list(Tid)),
+    ets:insert(Tid, maps:to_list(OtherEntries)),
+    OtherVV;
+merge_int(OtherVV, _OtherEntries, VV, Entries, _Tid)
+  when map_size(OtherVV) == 0 ->
+    %% case 3: they have no add/remove history, but we do
+    io:format("merge_int, empty incoming~n"),
     io:format("Entries: ~p~n", [Entries]),
-    io:format("ThisVV: ~p~nThisTid: ~p~n", [VV, Tid]),
-    ok.
+    io:format("ThisVV: ~p~n", [VV]),
+    VV;
+merge_int(OtherVV, OtherEntries, VV, Entries, Tid) ->
+    %% case 4: both sides have add/remove histories
+    io:format("merge_int~n"),
+    io:format("OtherVV: ~p~n", [OtherVV]),
+    io:format("OtherEntries: ~p~n", [OtherEntries]),
+    io:format("Entries: ~p~n", [Entries]),
+    io:format("ThisVV: ~p~n", [VV]),
+
+    OtherKeys = maps:keys(OtherEntries),
+
+    %% merge using their keys
+    List =
+        lists:map(
+          fun(OtherKey) ->
+                  OtherEntry =
+                      [{OtherNode, OtherEntryVersion}] =
+                      maps:get(OtherKey, OtherEntries),
+                  io:format("OtherKey: ~p~n", [OtherKey]),
+                  io:format("OtherEntry: ~p~n", [OtherEntry]),
+                  %% io:format("OtherNode: ~p~n", [OtherNode]),
+                  %% io:format("OtherEntryVersion: ~p~n", [OtherEntryVersion]),
+
+                  %% step 1: have we merged from this entry's node before?
+                  case maps:get(OtherNode, VV, nope) of
+                      nope ->
+                          %% no, so just add the entry
+                          ets:insert(Tid, {OtherKey, OtherEntry}),
+                          OtherEntry;
+                      %% {OtherNode, OurNodeVersion} ->
+                      OurNodeVersion ->
+                          %% step 2: yes, now compare the entries
+                          OurEntry = maps:get(OtherKey, Entries, nope),
+                          io:format("OurEntry: ~p~n", [OurEntry]),
+                          case maps:get(OtherKey, Entries, nope) of
+                              nope ->
+                                  %% we don't have an entry for this key
+                                  io:format("OtherEntryVersion: ~p~nOurNodeVersion: ~p~n", [OtherEntryVersion, OurNodeVersion]),
+                                  case OtherEntryVersion =< OurNodeVersion of
+                                      true ->
+                                          %% we removed it since we last merged, and they haven't re-added it
+                                          [];
+                                      false ->
+                                          %% we removed it since we last merged, but they have re-added it
+                                          ets:insert(Tid, [{OtherKey, OtherEntry}]),
+                                          [{OtherKey, OtherEntry}]
+                                  end;
+                              OtherEntry ->
+                                  %% we have an identical entry for this key
+                                  [{OtherKey, OtherEntry}];
+                              [{OtherNode, OurEntryVersion}] ->
+                                  %% same node, but different version
+                                  %% we will update if their version is a later one
+                                  case OtherEntryVersion > OurEntryVersion of
+                                      true ->
+                                          ets:insert(Tid, [{OtherKey, OtherEntry}]),
+                                          [{OtherKey, OtherEntry}];
+                                      false ->
+                                          []
+                                  end;
+                              [{DifferentNode, DifferentEntryVersion}] ->
+                                  %% ?? we have this key mapped to a different node
+                                  %% hmmm....
+                                  [{DifferentNode, DifferentEntryVersion}]
+                          end
+                  end
+          end,
+
+          %% io:format("DifferentEntry: ~p~n",
+          %% 		[DifferentEntry]),
+          %% OtherEntry
+
+          OtherKeys),
+    io:format("List: ~p~n", [List]),
+
+    %% also TODO merge using keys we have that they don't
+    Keys = maps:keys(Entries),
+    DiffKeys = Keys -- OtherKeys,
+
+    %% also TODO merge version vectors
+
+    VV.
 
 get_data_int(Tid, VV) ->
-    io:format("Tid: ~p~ndata: ~p~n", [Tid, ets:tab2list(Tid)]),
-    [{version_vector, VV}, {entries, ets:tab2list(Tid)}].
+    io:format("Tid: ~p~ndata: ~p~n", [Tid, maps:from_list(ets:tab2list(Tid))]),
+    [{version_vector, VV}, {entries, maps:from_list(ets:tab2list(Tid))}].
+
+reset_int(Tid) ->
+    ets:delete_all_objects(Tid),
+    maps:new().
