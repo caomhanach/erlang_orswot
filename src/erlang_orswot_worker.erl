@@ -284,7 +284,6 @@ add(Entry, Id, Tid, VersionVector, []) ->
     io:format("VersionVector: ~p~n", [VersionVector]),
     Version = maps:get(Id, VersionVector),
     true = ets:insert(Tid, {Entry, [{Id, Version+1}]}),
-    %% maps:update(Id, maps:get(Id, VersionVector) +1, VersionVector);
     maps:update_with(Id, fun(X) -> X+1 end, ?VV_START_VERSION, VersionVector);
 add(_Entry, _Id, _Tid, VersionVector, _Existing) ->
     VersionVector.
@@ -293,11 +292,19 @@ remove(_Entry, _Tid, []) ->
     ok;
 remove(Entry, Tid, _Existing) ->
     ets:delete(Tid, Entry).
-    %% maps:update_with(Id, fun(X) -> X+1 end, ?VV_START_VERSION, VV).
 
-%% merge_int(OtherVV, _OtherEntries, OurVV, _OurEntries, _Tid)
-%%   when map_size(OurVV) == 0,
-%%        map_size(OtherVV) == 0 ->
+%% Merge algotrithm
+%% See figure 3 on page 7
+%%
+%% merge (B)
+%% let M = (E ∩ B.E)
+%% let M' = {(e, c, i) ∈ E \ B.E|c > B.v[i]}
+%% let M'' = {(e, c, i) ∈ B.E \ E|c > v[i]}
+%% let U = M ∪ M' ∪ M''
+%% let O = {(e, c, i) ∈ U|∃(e, c', i) ∈ U : c < c'}
+%% E := U \ O
+%% v := [max(v[0], B.v[0]), . . . , max(v[n], B.v[n])]
+%%
 merge_int(OtherVV, OtherEntries, OtherVV, OtherEntries, _Tid) ->
     %% case 1: our data is identical to their data
     %% This includes the case where neither side
@@ -331,116 +338,162 @@ merge_int(OtherVV, OtherEntries, VV, Entries, Tid) ->
     OtherKeys = maps:keys(OtherEntries),
 
     %% merge using their keys
-    AddToVV1 = process_data(Tid, VV, Entries, OtherVV, OtherKeys, OtherEntries),
-    io:format("AddToVV1: ~p~n", [AddToVV1]),
-    AddToVVMap1 = maps:from_list(AddToVV1),
-    io:format("AddToVVMap1: ~p~n", [AddToVVMap1]),
+    process_data(Tid, VV, Entries, OtherKeys, OtherEntries),
 
-    %% also TODO merge using keys we have that they don't
+    %% merge using keys we have that they don't
     Keys = maps:keys(Entries),
     DiffKeys = Keys -- OtherKeys,
     io:format("DiffKeys: ~p~n", [DiffKeys]),
-    AddToVV2 =
-        %% process_data(Tid, OtherVV, OtherEntries, VV, DiffKeys, Entries),
-        lists:foldl(
-          fun(Key, Acc) ->
-                  OurEntry =
-                      [{Node, EntryVersion}] =
-                      maps:get(Key, Entries),
-                  io:format("OurEntry: ~p~n", [OurEntry]),
-                  case maps:get(Node, OtherVV, nope) of
-                      nope ->
-                          %% they've never seen this node's data
-                          Acc;
-                      OtherNodeVersion ->
-                          io:format("OtherNodeVersion: ~p~n", [OtherNodeVersion]),
-                          case EntryVersion > OtherNodeVersion of
-                              true ->
-                                  %% we added it since we last merged
-                                  Acc;
-                              false ->
-                                  %% they removed it since we last merged
-                                  ets:delete(Tid, Key),
-                                  [{Node, maps:get(Node, OtherVV)} | Acc]
-                          end
-                  end
-          end,
-          [],
-          DiffKeys),
-    io:format("AddToVV2: ~p~n", [AddToVV2]),
-    AddToVVMap2 = maps:from_list(AddToVV2),
-    io:format("AddToVVMap1: ~p~n", [AddToVVMap2]),
 
-    %% also TODO merge version vectors
-    AddToVVFinal = maps:merge(AddToVVMap1, AddToVVMap2),
-    io:format("AddToVVFinal: ~p~n", [AddToVVFinal]),
+    %% process_data(Tid, OtherVV, OtherEntries, DiffKeys, Entries),
+    process_diff_entries(DiffKeys, Entries, OtherVV, Tid),
 
-    maps:merge(VV, AddToVVFinal).
+    NewVV = merge_version_vectors(VV, OtherVV),
+    io:format("NewVV: ~p~n", [NewVV]),
+    NewVV.
+
+process_diff_entries(DiffKeys, Entries, OtherVV, Tid) ->
+    lists:foreach(
+      fun(Key) ->
+              OurEntry =
+                  [{Node, EntryVersion}] =
+                  maps:get(Key, Entries),
+              io:format("OurEntry: ~p~n", [OurEntry]),
+              case maps:get(Node, OtherVV, nope) of
+                  nope ->
+                      %% They've never seen this node's data
+                      %%
+                      %% These are entries in subset M
+                      ok;
+                  OtherNodeVersion ->
+                      %% This case tests for membership in the M' subset
+                      %% based on the formula:
+                      %% let M' = {(e, c, i) ∈ E \ B.E|c > B.v[i]}
+                      io:format("OtherNodeVersion: ~p~n", [OtherNodeVersion]),
+                      case EntryVersion > OtherNodeVersion of
+                          true ->
+                              %% We added it since we last merged
+                              %%
+                              %% These are entries in subset M'
+                              ok;
+                          false ->
+                              %% They removed it since we last merged
+                              %%
+                              %% These are entries on the lesser-than
+                              %% side of the inequality test for M'
+                              ets:delete(Tid, Key)
+                      end
+              end
+      end,
+      DiffKeys).
+
 
 merge_version_vectors(VV, OtherVV) ->
-    %% also TODO merge version vectors
-    ok.
+    %%
+    %% Final stage of the merge algortihm:
+    %% v := [max(v[0], B.v[0]), . . . , max(v[n], B.v[n])]
+    %%
+    Keys = maps:keys(VV),
+    OtherKeys = maps:keys(OtherVV),
+    NewVV1 = maps:from_list(compare_vv_values(Keys, VV, OtherVV)),
+    io:format("NewVV1: ~p~n", [NewVV1]),
 
-process_data(Tid, VV, Entries, OtherVV, OtherKeys, OtherEntries) ->
-            %% lists:map(
-        lists:foldl(
-          fun(OtherKey, Acc) ->
-                  OtherEntry =
-                      [{OtherNode, OtherEntryVersion}] =
-                      maps:get(OtherKey, OtherEntries),
-                  io:format("OtherKey: ~p~n", [OtherKey]),
-                  io:format("OtherEntry: ~p~n", [OtherEntry]),
+    DiffKeys = OtherKeys -- Keys,
+    NewVV2 = maps:with(DiffKeys, OtherVV),
+    io:format("NewVV2: ~p~n", [NewVV2]),
+    maps:merge(NewVV1, NewVV2).
 
-                  %% step 1: have we merged from this entry's node before?
-                  case maps:get(OtherNode, VV, nope) of
-                      nope ->
-                          %% no, so just add the entry
-                          io:format("inserting new entry: ~p~n", [OtherEntry]),
-                          ets:insert(Tid, {OtherKey, OtherEntry}),
-                          [{OtherNode, maps:get(OtherNode, OtherVV)} | Acc];
-                      %% {OtherNode, OurNodeVersion} ->
-                      OurNodeVersion ->
-                          %% step 2: yes, now compare the entries
-                          OurEntry = maps:get(OtherKey, Entries, nope),
-                          io:format("OurEntry: ~p~n", [OurEntry]),
-                          case maps:get(OtherKey, Entries, nope) of
-                              nope ->
-                                  %% we don't have an entry for this key
-                                  io:format("OtherEntryVersion: ~p~nOurNodeVersion: ~p~n", [OtherEntryVersion, OurNodeVersion]),
-                                  case OtherEntryVersion =< OurNodeVersion of
-                                      true ->
-                                          %% we removed it since we last merged, and they haven't re-added it
-                                          Acc;
-                                      false ->
-                                          %% either it's new on their side, or
-                                          %% we removed it since we last merged, but they have re-added it
-                                          io:format("inserting new or re-added entry: ~p~n", [OtherEntry]),
-                                          ets:insert(Tid, [{OtherKey, OtherEntry}]),
-                                          [{OtherNode, maps:get(OtherNode, OtherVV)} | Acc]
-                                  end;
-                              OtherEntry ->
-                                  %% we have an identical entry for this key
-                                  Acc;
-                              [{OtherNode, OurEntryVersion}] ->
-                                  %% same node, but different version
-                                  %% we will update if their version is a later one
-                                  case OtherEntryVersion > OurEntryVersion of
-                                      true ->
-                                          io:format("inserting updated entry: ~p~n", [OtherEntry]),
-                                          ets:insert(Tid, [{OtherKey, OtherEntry}]),
-                                          [{OtherNode, maps:get(OtherNode, OtherVV)} | Acc];
-                                      false ->
-                                          Acc
-                                  end;
-                              [{DifferentNode, DifferentEntryVersion}] ->
-                                  %% ?? we have this key mapped to a different node
-                                  %% hmmm....
-                                  [{DifferentNode, DifferentEntryVersion} | Acc]
-                          end
-                  end
-          end,
-          [],
-          OtherKeys).
+compare_vv_values(Keys, VV, OtherVV) ->
+    lists:foldl(
+      fun(Key, Acc) ->
+              Val = maps:get(Key, VV),
+              OtherVal = maps:get(Key, OtherVV, 0),
+              case OtherVal > Val of
+                  true ->
+                      [{Key, OtherVal} | Acc];
+                  false ->
+                      [{Key, Val} | Acc]
+              end
+      end,
+      [],
+      Keys).
+
+
+process_data(Tid, VV, Entries, OtherKeys, OtherEntries) ->
+    lists:foreach (
+      fun(OtherKey) ->
+              OtherEntry =
+                  [{OtherEntryNode, OtherEntryVersion}] =
+                  maps:get(OtherKey, OtherEntries),
+              io:format("OtherKey: ~p~n", [OtherKey]),
+              io:format("OtherEntry: ~p~n", [OtherEntry]),
+
+              %%
+              %% Step 1: have we merged from this entry's node before?
+              %%
+              case maps:get(OtherEntryNode, VV, nope) of
+                  nope ->
+                      %% No, so just add the entry
+                      %%
+                      %% These are entries in subset M
+                      %%
+                      %% Note that we rely on the behavior of
+                      %% the "update add (element e)"
+                      %% algorithm to guarantee that the version vector check is
+                      %% a reliable shortcut here
+                      io:format("inserting new entry: ~p~n", [OtherEntry]),
+                      ets:insert(Tid, {OtherKey, OtherEntry});
+                  OurOtherNodeVersion ->
+                      %%
+                      %% Step 2: yes, now compare the entries
+                      %%
+                      OurEntry = maps:get(OtherKey, Entries, nope),
+                      io:format("OurEntry: ~p~n", [OurEntry]),
+                      case maps:get(OtherKey, Entries, no_entry) of
+                          no_entry ->
+                              %% We don't have an entry for this key
+                              io:format("OtherEntryVersion: ~p~nOurNodeVersion: ~p~n", [OtherEntryVersion, OurOtherNodeVersion]),
+                              case OtherEntryVersion > OurOtherNodeVersion of
+                                  true ->
+                                      %% Either it's new on their side, or
+                                      %% we removed it since we last merged, but they have re-added it
+                                      %%
+                                      %% These are entries in subset M'
+                                      io:format("inserting new or re-added entry: ~p~n", [OtherEntry]),
+                                      ets:insert(Tid, [{OtherKey, OtherEntry}]);
+
+                                  false ->
+                                      %% We removed it since we last merged, and they haven't re-added it
+                                      %%
+                                      %% These are entries on the lesser-than
+                                      %% side of the inequality test for M'
+                                      ok
+                              end;
+                          OtherEntry ->
+                              io:format("identical entry~n"),
+                              %% We have an identical entry for this key
+                              ok;
+                          [{_Node, OurEntryVersion}] ->
+                              %% Same node, but different version
+                              %% We will update if their version is a later one
+                              case OtherEntryVersion > OurEntryVersion of
+                                  true ->
+                                      io:format("inserting updated entry: ~p~n", [OtherEntry]),
+                                      ets:insert(Tid, [{OtherKey, OtherEntry}]);
+                                  false ->
+                                      ok
+                              end
+                              %% [{_DifferentNode, _DifferentEntryVersion}] ->
+                              %%     io:format("strange days indeed, DifferentNode: ~p~n", [_DifferentNode]),
+                              %%     %% ?? we have this key mapped to a different node
+                              %%     %% hmmm....
+                              %%     %% TODO sort this out, i.e. support more that 2 nodes
+                              %%     %% [{DifferentNode, DifferentEntryVersion} | Acc]
+                              %%     ok
+                      end
+              end
+      end,
+      OtherKeys).
 
 get_data_int(Tid, VV) ->
     io:format("Tid: ~p~ndata: ~p~n", [Tid, maps:from_list(ets:tab2list(Tid))]),
