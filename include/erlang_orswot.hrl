@@ -1,1 +1,1 @@
--define(NODES, [vNode_A, vNode_B]).
+-define(NODES, [vNode_A, vNode_B, vNode_C]).
