@@ -21,7 +21,7 @@ get_data(Node) ->
     erlang_orswot_worker:get_data(Node).
 
 merge() ->
-    [Node1, Node2] = ?NODES,
+    [Node1, Node2, _Node3] = ?NODES,
     merge_nodes(Node1, Node2),
     ok.
 

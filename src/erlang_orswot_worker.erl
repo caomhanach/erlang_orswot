@@ -10,18 +10,12 @@
 %%--------------------------------------------------------------------
 %% API
 %%--------------------------------------------------------------------
--export([stop/0]).
-
 -export([start_link/1,
          add_entry/2,
          remove_entry/2,
          get_data/1,
          merge/2,
          reset/1]).
-
-%% For debugging:
--export([dump/0]).
--export([crash/0]).
 
 %%--------------------------------------------------------------------
 %% Internal exports
@@ -33,6 +27,8 @@
 %%--------------------------------------------------------------------
 %% Include files
 %%--------------------------------------------------------------------
+-include_lib("proper/include/proper.hrl").
+-include("../include/erlang_orswot.hrl").
 
 %%--------------------------------------------------------------------
 %% Definitions
@@ -43,83 +39,87 @@
 -define(ENTRY_START_VERSION, 1).
 -define(TIMEOUT, infinity). %% milliseconds | infinity
 -define(TABLE_NAME(Id), list_to_atom(atom_to_list(Id) ++ "_table").
-%% -type version_vector() :: [tuple()].
+
+%% -type version_vector() :: map().
 -type version_vector() :: map().
-%% -type entry() :: binary().
+-type entries() :: map().
+-type node_data() :: #{version_vector := version_vector(),
+                       entries := entries()}.
+-type id_tuple() :: {id, atom()}.
+-type nodes_tuple() :: {nodes, list()}.
+-type init_args() :: [id_tuple() | nodes_tuple()].
 
 %%--------------------------------------------------------------------
 %% Records
 %%--------------------------------------------------------------------
--record(state, {id :: integer(),
+-record(state, {id :: atom(),
                 nodes :: [atom()],
-                tid :: integer(),
+                tid :: ets:tid(),
                 version_vector :: version_vector()}).
 
 %%====================================================================
 %% API
 %%====================================================================
 -spec start_link(Args) -> Result when
-      Args   :: term(),
+      Args   :: init_args() | term(),
       Result :: {ok, pid()} | ignore | {error, Reason},
       Reason :: {already_started, pid()} | term().
-start_link(Args) ->
-    Id = proplists:get_value(id, Args),
-    %% put(id, Id),
-    gen_server:start_link({local, Id}, ?MODULE, Args, []).
+start_link([{id, Id}, {nodes, _Nodes}] = Args) ->
+    gen_server:start_link({local, Id}, ?MODULE, Args, []);
+start_link(Other) ->
+    {error, {invalid_init_args, Other}}.
 
+
+-spec add_entry(Entry, Node) -> Result when
+      Entry  :: term(),
+      Node   :: atom(),
+      Result :: ok | {error, Reason},
+      Reason :: term().
 add_entry(Entry, Node) ->
     call(Node, {add, Entry}).
 
+-spec remove_entry(Entry, Node) -> Result when
+      Entry  :: term(),
+      Node   :: atom(),
+      Result :: ok | {error, Reason},
+      Reason :: term().
 remove_entry(Entry, Node) ->
     call(Node, {remove, Entry}).
 
+-spec merge(ThisNode, ThatNode) -> Result when
+      ThisNode :: atom(),
+      ThatNode :: atom(),
+      Result   :: ok | {error, Reason},
+      Reason   :: term().
 merge(ThisNode, ThatNode) ->
     ThatData = call(ThatNode, get_data),
     io:format("ThatData: ~p~n", [ThatData]),
     call(ThisNode, {merge, ThatData}).
 
+-spec get_data(Node) -> Result when
+      Node    :: atom(),
+      Result  :: node_data() | {error, Reason},
+      Reason  :: term().
 get_data(Node) ->
-    %% gen_server:call(get(id), get_data).
     call(Node, get_data).
 
+-spec reset(Node) -> Result when
+      Node    :: atom(),
+      Result  :: node_data() | {error, Reason},
+      Reason  :: term().
 reset(Node) ->
     call(Node, reset).
-
-%%--------------------------------------------------------------------
-%% @doc Start the server.
-%% @end
-%%--------------------------------------------------------------------
-%% -spec start_link() -> Result when
-%%       Result :: {ok, pid()} | ignore | {error, Reason},
-%%       Reason :: {already_started, pid()} | term().
-%% start_link() ->
-%%     gen_server:start_link({local, ?SERVER}, ?MODULE, {}, []).
 
 %%--------------------------------------------------------------------
 %% @doc Stop the server.
 %% @end
 %%--------------------------------------------------------------------
--spec stop() -> ok.
-stop() ->
-    MRef = erlang:monitor(process, ?SERVER),
-    Reply = call(?SERVER, stop),
-    receive {'DOWN', MRef, _Type, _Object, _Info} -> Reply end.
-
-%%--------------------------------------------------------------------
-%% @doc Dump the server's internal state (for debugging purposes).
-%% @end
-%%--------------------------------------------------------------------
--spec dump() -> term().
-dump() ->
-    call(?SERVER, dump).
-
-%%--------------------------------------------------------------------
-%% @doc Crash the server (for debugging purposes).
-%% @end
-%%--------------------------------------------------------------------
--spec crash() -> no_return().
-crash() ->
-    call(?SERVER, crash).
+%% -spec stop() -> ok | {error, Reason} when
+%%       Reason :: term().
+%% stop() ->
+%%     MRef = erlang:monitor(process, ?SERVER),
+%%     Reply = call(?SERVER, stop),
+%%     receive {'DOWN', MRef, _Type, _Object, _Info} -> Reply end.
 
 %%====================================================================
 %% Server functions
@@ -130,27 +130,23 @@ crash() ->
 %% @end
 %%--------------------------------------------------------------------
 -spec init(Args) -> Result when
-      Args    :: term(),
-      Result  :: {ok, State} | {ok, State, Timeout} | {ok, State, hibernate} |
-                 {stop, Reason} | ignore,
+      Args    :: init_args() | term(),
+      Result  :: {ok, State} | {ok, State, Timeout} |
+                 {ok, State, hibernate} | {stop, Reason} | ignore,
       State   :: term(),
       Timeout :: non_neg_integer(),
       Reason  :: term().
 init([{id, Id}, {nodes, Nodes}]) when is_atom(Id) ->
     %% io:format("Id: ~p~n, self(): ~p~n", [Id, self()]),
-    Tid = ets:new(?TABLE_NAME(Id)), [set]),
-%% io:format("process_info: ~p~n", [process_info(self())]),
-%% io:format("registered: ~p~n", [registered()]),
-    %% true = erlang:register(?NAME(Id), self()),
-%% NewMap = maps:new(),
-VV = maps:new(),
-%% maps:put(Id, ?VV_START_VERSION, NewMap),
-    {ok,
-#state{id=Id, nodes=Nodes, tid=Tid,
- version_vector=VV
-%% [{Id, ?VV_START_VERSION}]
+        process_flag(trap_exit, true),
 
-}}.
+    Tid = ets:new(?TABLE_NAME(Id)), [set]),
+    VV = maps:new(),
+    {ok,
+     #state{id=Id, nodes=Nodes, tid=Tid,
+            version_vector=VV}};
+init(Other) ->
+    {stop, {invalid_init_args, Other}}.
 
 %%--------------------------------------------------------------------
 %% @doc Handle call messages.
@@ -174,23 +170,23 @@ VV = maps:new(),
       Reason   :: term().
 handle_call({add, Entry}, _From,
             #state{id=Id, tid=Tid, version_vector=VV}=State) ->
-    io:format("State: ~p~n", [State]),
+    %% io:format("State: ~p~n", [State]),
     NewVV = add(Entry, Id, Tid, VV, ets:lookup(Tid, Entry)),
     NewState = State#state{version_vector=NewVV},
-    io:format("NewState: ~p~n", [NewState]),
+    %% io:format("NewState: ~p~n", [NewState]),
 
     {reply, ok, NewState};
 handle_call({remove, Entry}, _From,
             #state{tid=Tid}=State) ->
     remove(Entry, Tid, ets:lookup(Tid, Entry)),
     {reply, ok, State};
-handle_call({merge, [{version_vector, OtherVV}, {entries, OtherEntries}]},
+handle_call({merge, #{version_vector := OtherVV,
+                      entries := OtherEntries}},
             _From,
             #state{version_vector=VV, tid=Tid}=State) ->
     Entries = maps:from_list(ets:tab2list(Tid)),
-    io:format("Entries: ~p~n", [Entries]),
+    %% io:format("Entries: ~p~n", [Entries]),
     NewVV = merge_int(OtherVV, OtherEntries, VV, Entries, Tid),
-    %% {reply, ok, NewState};
     {reply, ok, State#state{version_vector=NewVV}};
 handle_call(get_data, _From,
             #state{tid=Tid, version_vector=VV}=State) ->
@@ -199,13 +195,6 @@ handle_call(reset, _From,
             #state{tid=Tid}=State) ->
     NewVV = reset_int(Tid),
     {reply, ok, State#state{version_vector=NewVV}};
-%% handle_call(stop, _From, State) ->
-%%     {stop, normal, ok, State};
-%% handle_call(dump, _From, State) ->
-%%     io:format("~p:~p: State=~n  ~p~n", [?MODULE, self(), State]),
-%%     {reply, State, State};
-%% handle_call(crash, From, _State) ->
-%%     erlang:error({deliberately_crashed_from,From});
 handle_call(UnknownRequest, _From, State) ->
     {reply, {error, {bad_request, UnknownRequest}}, State}.
 
@@ -241,7 +230,7 @@ handle_cast(_Msg, State) ->
       Timeout  :: non_neg_integer() | infinity,
       Reason   :: term().
 handle_info(_Info, State) ->
-    io:format("Info: ~p~n", [_Info]),
+    %% io:format("Info: ~p~n", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -274,14 +263,23 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 
 call(Pid, Msg) ->
-    gen_server:call(Pid, Msg, ?TIMEOUT).
+    process_flag(trap_exit, true),
+
+    try gen_server:call(Pid, Msg, ?TIMEOUT)
+    catch
+        {exit, Reason} ->
+            io:format("caught Reason: ~p~n", [Reason]),
+            {error, {exit, Reason}};
+        _ ->
+            ok
+    end.
 
 add(Entry, Id, Tid, VersionVector, []) when map_size(VersionVector) == 0 ->
     true = ets:insert(Tid, {Entry, [{Id, ?ENTRY_START_VERSION}]}),
     #{Id => ?VV_START_VERSION};
 add(Entry, Id, Tid, VersionVector, []) ->
-    io:format("Id : ~p~n", [Id]),
-    io:format("VersionVector: ~p~n", [VersionVector]),
+    %% io:format("Id : ~p~n", [Id]),
+    %% io:format("VersionVector: ~p~n", [VersionVector]),
     Version = maps:get(Id, VersionVector, 0),
     true = ets:insert(Tid, {Entry, [{Id, Version+1}]}),
     maps:update_with(Id, fun(X) -> X+1 end, ?VV_START_VERSION, VersionVector);
@@ -342,12 +340,12 @@ merge_int(OtherVV, OtherEntries, OurVV, OurEntries, Tid) ->
     %% Next merge using keys we have that they don't
     Keys = maps:keys(OurEntries),
     DiffKeys = Keys -- OtherKeys,
-    io:format("DiffKeys: ~p~n", [DiffKeys]),
+    %% io:format("DiffKeys: ~p~n", [DiffKeys]),
     merge_diff_keys(Tid, DiffKeys, OurEntries, OtherVV),
 
     %% Finally merge version vectors
     NewVV = merge_version_vectors(OurVV, OtherVV),
-    io:format("NewVV: ~p~n", [NewVV]),
+    %% io:format("NewVV: ~p~n", [NewVV]),
     NewVV.
 
 merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
@@ -358,7 +356,7 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                   maps:from_list(maps:get(TheirEntryKey, TheirEntries)),
               OurEntryMap =
                   maps:from_list(maps:get(TheirEntryKey, OurEntries, [])),
-              io:format("OurEntryMap: ~p~n", [OurEntryMap]),
+              %% io:format("OurEntryMap: ~p~n", [OurEntryMap]),
 
               %% Inner loop: each {node, version} record for this entry
               %% in TheirEntryMap
@@ -369,18 +367,18 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                                 maps:get(TheirNodeRecordKey, TheirEntryMap),
                             case maps:get(TheirNodeRecordKey, OurEntryMap, no_entry) of
                                 no_entry ->
-                                    io:format("TheirNodeRecordKey: ~p~n, OurEntryMap: ~p~n",
-                                              [TheirNodeRecordKey, OurEntryMap]),
+                                    %% io:format("TheirNodeRecordKey: ~p~n, OurEntryMap: ~p~n",
+                                    %% [TheirNodeRecordKey, OurEntryMap]),
                                     OurNodeVVVersion =
                                         maps:get(TheirNodeRecordKey, OurVV, 0),
-                                    io:format("TheirNodeRecordVersion: ~p~nOurNodeVVVersion: ~p~n", [TheirNodeRecordVersion, OurNodeVVVersion]),
+                                    %% io:format("TheirNodeRecordVersion: ~p~nOurNodeVVVersion: ~p~n", [TheirNodeRecordVersion, OurNodeVVVersion]),
                                     case TheirNodeRecordVersion > OurNodeVVVersion of
                                         true ->
                                             %% Either it's new on their side, or
                                             %% we removed it since we last merged, but they have re-added it
                                             %%
                                             %% These are entries in subset M'
-                                            io:format("putting: ~p~n", [{TheirNodeRecordKey, TheirNodeRecordVersion}]),
+                                            %% io:format("putting: ~p~n", [{TheirNodeRecordKey, TheirNodeRecordVersion}]),
                                             maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
                                         false ->
                                             %% We removed it since we last merged, and they haven't re-added it
@@ -390,7 +388,7 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                                             InnerAccMap
                                     end;
                                 TheirNodeRecordVersion ->
-                                    io:format("identical~n"),
+                                    %% io:format("identical~n"),
                                     %% We have an identical entry for this key
                                     %% These are entries in subset M
                                     maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
@@ -418,7 +416,7 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                   false ->
                       %% This is a new, updated, or identical entry in our db
                       %% TODO avoid inserting identical entries
-                      io:format("inserting: ~p~n", [TheirEntryKey]),
+                      %% io:format("inserting: ~p~n", [TheirEntryKey]),
                       ets:insert(Tid, {TheirEntryKey, maps:to_list(AccMap)})
               end
       end,
@@ -437,10 +435,10 @@ merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
                                 maps:get(OurNodeRecordKey, OurEntryMap),
                             TheirNodeVVVersion =
                                 maps:get(OurNodeRecordKey, TheirVV, 0),
-                            io:format("OurNodeRecordKey: ~p~nOurNodeRecordVersion: ~p~nTheirNodeVVVersion: ~p~n",
-                                      [OurNodeRecordKey,
-                                       OurNodeRecordVersion,
-                                       TheirNodeVVVersion]),
+                            %% io:format("OurNodeRecordKey: ~p~nOurNodeRecordVersion: ~p~nTheirNodeVVVersion: ~p~n",
+                            %%           [OurNodeRecordKey,
+                            %%            OurNodeRecordVersion,
+                            %%            TheirNodeVVVersion]),
                             case OurNodeRecordVersion > TheirNodeVVVersion of
                                 true ->
                                     %% belongs to subset M'
@@ -459,7 +457,7 @@ merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
                   true ->
                       ets:delete(Tid, OurEntryKey);
                   false ->
-                      io:format("inserting: ~p~n~p~n", [OurEntryKey, AccMap]),
+                      %% io:format("inserting: ~p~n~p~n", [OurEntryKey, AccMap]),
                       %% TODO avoid inserting identical entries
                       ets:insert(Tid, {OurEntryKey, maps:to_list(AccMap)})
               end
@@ -474,11 +472,11 @@ merge_version_vectors(VV, OtherVV) ->
     Keys = maps:keys(VV),
     OtherKeys = maps:keys(OtherVV),
     NewVV1 = maps:from_list(compare_vv_values(Keys, VV, OtherVV)),
-    io:format("NewVV1: ~p~n", [NewVV1]),
+    %% io:format("NewVV1: ~p~n", [NewVV1]),
 
     DiffKeys = OtherKeys -- Keys,
     NewVV2 = maps:with(DiffKeys, OtherVV),
-    io:format("NewVV2: ~p~n", [NewVV2]),
+    %% io:format("NewVV2: ~p~n", [NewVV2]),
     maps:merge(NewVV1, NewVV2).
 
 compare_vv_values(Keys, VV, OtherVV) ->
@@ -497,9 +495,11 @@ compare_vv_values(Keys, VV, OtherVV) ->
       Keys).
 
 get_data_int(Tid, VV) ->
-    io:format("Tid: ~p~ndata: ~p~n", [Tid, maps:from_list(ets:tab2list(Tid))]),
-    [{version_vector, VV}, {entries, maps:from_list(ets:tab2list(Tid))}].
+    %% io:format("Tid: ~p~ndata: ~p~n", [Tid, maps:from_list(ets:tab2list(Tid))]),
+    %% [{version_vector, VV}, {entries, maps:from_list(ets:tab2list(Tid))}].
+    #{version_vector => VV, entries => maps:from_list(ets:tab2list(Tid))}.
 
 reset_int(Tid) ->
     ets:delete_all_objects(Tid),
     maps:new().
+
