@@ -14,6 +14,8 @@
          add_entry/2,
          remove_entry/2,
          get_data/1,
+         get_entries/1,
+         get_version_vector/1,
          merge/2,
          reset/1]).
 
@@ -103,6 +105,20 @@ merge(ThisNode, ThatNode) ->
 get_data(Node) ->
     call(Node, get_data).
 
+-spec get_entries(Node) -> Result when
+      Node    :: atom(),
+      Result  :: entries() | {error, Reason},
+      Reason  :: term().
+get_entries(Node) ->
+    call(Node, get_entries).
+
+-spec get_version_vector(Node) -> Result when
+      Node    :: atom(),
+      Result  :: entries() | {error, Reason},
+      Reason  :: term().
+get_version_vector(Node) ->
+    call(Node, get_version_vector).
+
 -spec reset(Node) -> Result when
       Node    :: atom(),
       Result  :: node_data() | {error, Reason},
@@ -191,6 +207,12 @@ handle_call({merge, #{version_vector := OtherVV,
 handle_call(get_data, _From,
             #state{tid=Tid, version_vector=VV}=State) ->
     {reply, get_data_int(Tid, VV), State};
+handle_call(get_entries, _From,
+            #state{tid=Tid}=State) ->
+    {reply, get_entries_int(Tid), State};
+handle_call(get_version_vector, _From,
+            #state{version_vector=VV}=State) ->
+    {reply, get_vv_int(VV), State};
 handle_call(reset, _From,
             #state{tid=Tid}=State) ->
     NewVV = reset_int(Tid),
@@ -499,7 +521,12 @@ get_data_int(Tid, VV) ->
     %% [{version_vector, VV}, {entries, maps:from_list(ets:tab2list(Tid))}].
     #{version_vector => VV, entries => maps:from_list(ets:tab2list(Tid))}.
 
+get_entries_int(Tid) ->
+    maps:from_list(ets:tab2list(Tid)).
+
+get_vv_int(VV) ->
+    VV.
+
 reset_int(Tid) ->
     ets:delete_all_objects(Tid),
     maps:new().
-
