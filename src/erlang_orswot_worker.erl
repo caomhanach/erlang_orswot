@@ -285,16 +285,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 
 call(Pid, Msg) ->
-    process_flag(trap_exit, true),
-
-    try gen_server:call(Pid, Msg, ?TIMEOUT)
-    catch
-        {exit, Reason} ->
-            io:format("caught Reason: ~p~n", [Reason]),
-            {error, {exit, Reason}};
-        _ ->
-            ok
-    end.
+    gen_server:call(Pid, Msg, ?TIMEOUT).
 
 add(Entry, Id, Tid, VersionVector, []) when map_size(VersionVector) == 0 ->
     true = ets:insert(Tid, {Entry, [{Id, ?ENTRY_START_VERSION}]}),
