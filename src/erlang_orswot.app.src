@@ -1,5 +1,5 @@
 {application, erlang_orswot,
- [{description, "An OTP application"},
+ [{description, "A simple Observed Remove Set Without Tombstones"},
   {vsn, "0.1.0"},
   {registered, []},
   {mod, { erlang_orswot_app, []}},

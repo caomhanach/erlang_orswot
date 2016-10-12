@@ -125,16 +125,6 @@ get_version_vector(Node) ->
 reset(Node) ->
     call(Node, reset).
 
-%%--------------------------------------------------------------------
-%% @doc Stop the server.
-%% @end
-%%--------------------------------------------------------------------
-%% -spec stop() -> ok | {error, Reason} when
-%%       Reason :: term().
-%% stop() ->
-%%     MRef = erlang:monitor(process, ?SERVER),
-%%     Reply = call(?SERVER, stop),
-%%     receive {'DOWN', MRef, _Type, _Object, _Info} -> Reply end.
 
 %%====================================================================
 %% Server functions

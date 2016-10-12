@@ -1,6 +1,5 @@
 -module(erlang_orswot).
 
-
 -export([add_entry/2,
          remove_entry/2,
          get_data/1,
@@ -9,6 +8,10 @@
          merge/0,
          merge_nodes/2,
          reset_node/1]).
+
+%% for testing
+-export([erlang_orswot_test/0,
+         erlang_orswot_test/1]).
 
 -include("../include/erlang_orswot.hrl").
 -include_lib("proper/include/proper.hrl").
@@ -390,3 +393,9 @@ check_version_vectors(VV1_Before,
 
             OurDiffMapBefore =:= OurDiffMapAfter
     end.
+
+erlang_orswot_test() ->
+    proper:module(erlang_orswot).
+erlang_orswot_test(UserOpts) ->
+    proper:module(erlang_orswot, UserOpts).
+
