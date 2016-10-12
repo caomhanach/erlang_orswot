@@ -288,7 +288,7 @@ check_entries(OurVV_Before, Entries1_Before, Entries2_Before,
     OurDiffKeysAfter = OurKeysAfter -- TheirEntryKeys,
 
     %% First check their entries
-    CheckAcc =
+    CheckTheirAcc =
         lists:foldl(
           fun(TheirEntryKey, OuterAcc) ->
                   TheirEntryMap =
@@ -314,10 +314,10 @@ check_entries(OurVV_Before, Entries1_Before, Entries2_Before,
                         fun(TheirNodeRecordKey, Acc) ->
                                 TheirNodeRecordVersion =
                                     maps:get(TheirNodeRecordKey, TheirEntryMap),
+                                OurNodeVVVersionBefore =
+                                    maps:get(TheirNodeRecordKey, OurVV_Before, 0),
                                 case maps:get(TheirNodeRecordKey, OurEntryMapAfter, no_entry) of
                                     no_entry ->
-                                        OurNodeVVVersionBefore =
-                                            maps:get(TheirNodeRecordKey, OurVV_Before, 0),
                                         case TheirNodeRecordVersion > OurNodeVVVersionBefore of
                                             true ->
                                                 %% Record was incorrectly omitted from subset M'
@@ -332,17 +332,36 @@ check_entries(OurVV_Before, Entries1_Before, Entries2_Before,
                                     %%     %% Record was correctly added to subset M
                                     %%     InnerAcc;
                                     _OurNodeRecordVersionAfter ->
-                                        OurNodeRecordVersionBefore =
-                                            maps:get(TheirNodeRecordKey, OurEntryMapBefore, 0),
-                                        case TheirNodeRecordVersion >= OurNodeRecordVersionBefore of
+                                        case maps:is_key(TheirNodeRecordKey, OurEntryMapBefore) of
                                             true ->
-                                                %% Record was correctly added to subset O
-                                                Acc;
+                                                %% We had this record before; compare record versions
+                                                OurNodeRecordVersionBefore =
+                                                    maps:get(TheirNodeRecordKey, OurEntryMapBefore),
+                                                case TheirNodeRecordVersion >= OurNodeRecordVersionBefore of
+                                                    true ->
+                                                        %% Record was correctly added to subset O
+                                                        Acc;
+                                                    false ->
+                                                        %% Record was incorrectly added to subset O
+                                                        io:format("false, TheirNodeRecordVersion: ~p > OurNodeRecordVersionBefore: ~p~n",
+                                                                  [TheirNodeRecordVersion, OurNodeRecordVersionBefore]),
+                                                        [false | Acc]
+                                                end;
+
                                             false ->
-                                                %% Record was incorrectly added to subset O
-                                                io:format("false, TheirNodeRecordVersion: ~p > OurNodeRecordVersionBefore: ~p~n",
-                                                          [TheirNodeRecordVersion, OurNodeRecordVersionBefore]),
-                                                [false | Acc]
+                                                %% We didn't have this entry before; use VV version if present
+                                                OurNodeVVVersionBefore =
+                                                    maps:get(TheirNodeRecordKey, OurVV_Before, 0),
+                                                case TheirNodeRecordVersion > OurNodeVVVersionBefore of
+                                                    true ->
+                                                        %% Record was correctly added to subset O
+                                                        Acc;
+                                                    false ->
+                                                        %% Record was incorrectly added to subset O
+                                                        io:format("false, TheirNodeRecordVersion: ~p > OurNodeVVVersionBefore: ~p~n",
+                                                                  [TheirNodeRecordVersion, OurNodeVVVersionBefore]),
+                                                        [false | Acc]
+                                                end
                                         end
                                 end
                         end,
@@ -352,37 +371,51 @@ check_entries(OurVV_Before, Entries1_Before, Entries2_Before,
           end,
           [],
           TheirEntryKeys),
-    io:format("CheckAcc: ~p~n", [CheckAcc]),
-    not lists:member(false, CheckAcc).
+    io:format("CheckAcc: ~p~n", [CheckTheirAcc]),
+    not lists:member(false, CheckTheirAcc).
 
-                  %% case lists:member(TheirEntryKey, OurKeysBefore) of
-                  %%     %% TODO: test the below from erlang_orswot_worker.erl
-                  %%     %% subset O
-                  %%     true ->
-                  %%         OurEntryMapBefore =
-                  %%             maps:get(TheirEntryKey, Entries1_Before),
-                  %%         OurNodeRecordVersionBefore =
-                  %%             maps:get(TheirNodeRecordKey, OurEntryMapBefore, 0),
+    %% CheckOurAcc =
+    %%     lists:foldl(
+    %%       fun(OurDiffEntryKey, OuterAcc) ->
+    %%               TheirEntryMap =
+    %%                   maps:from_list(maps:get(TheirEntryKey, Entries2_Before)),
+    %%               OurEntryMapBefore =
+    %%                   maps:from_list(maps:get(TheirEntryKey, Entries1_Before, [])),
+    %%               OurEntryMapAfter =
+    %%                   maps:from_list(maps:get(TheirEntryKey, Entries1_After, [])),
+    %%               io:format("TheirEntryMap: ~p~nOurEntryMapBefore: ~p~nOurEntryMapAfter: ~p~n", [TheirEntryMap, OurEntryMapBefore, OurEntryMapAfter]),
+    %%               ok
+    %%       end,
+    %%       [],
+    %%       OurDiffKeysAfter)
 
-                  %%         case TheirNodeRecordVersion > OurNodeRecordVersionBefore of
-                  %%             true ->
-                  %%                 %% Correctly added to subset O
-                  %%                 [];
-                  %%             false ->
-                  %%                 %% Should have been excluded from subset O
-                  %%                 [false | Acc]
-                  %%         end;
-                  %%     false ->
-                  %%         OurNodeVVVersion =
-                  %%             maps:get(TheirNodeRecordKey, OurVV_Before, 0),
-                  %%         case TheirNodeRecordVersion > OurNodeVVVersion of
-                  %%             true ->
-                  %%                 %% Correctly added to subset M'
-                  %%                 Acc;
-                  %%             false ->
-                  %%                 %% Incorrectly added to subset M'
-                  %%                 [false | Acc]
-                  %%         end
+    %% case lists:member(TheirEntryKey, OurKeysBefore) of
+    %%     %% TODO: test the below from erlang_orswot_worker.erl
+    %%     %% subset O
+    %%     true ->
+    %%         OurEntryMapBefore =
+    %%             maps:get(TheirEntryKey, Entries1_Before),
+    %%         OurNodeRecordVersionBefore =
+    %%             maps:get(TheirNodeRecordKey, OurEntryMapBefore, 0),
+
+    %%         case TheirNodeRecordVersion > OurNodeRecordVersionBefore of
+    %%             true ->
+    %%                 %% Correctly added to subset O
+    %%                 [];
+    %%             false ->
+    %%                 %% Should have been excluded from subset O
+    %%                 [false | Acc]
+    %%         end;
+    %%     false ->
+    %%         OurNodeVVVersion =
+    %%             maps:get(TheirNodeRecordKey, OurVV_Before, 0),
+    %%         case TheirNodeRecordVersion > OurNodeVVVersion of
+    %%             true ->
+    %%                 %% Correctly added to subset M'
+    %%                 Acc;
+    %%             false ->
+    %%                 %% Incorrectly added to subset M'
+    %%                 [false | Acc]
+    %%         end
 
     %% true.
-

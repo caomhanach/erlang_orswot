@@ -448,10 +448,6 @@ merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
                                 maps:get(OurNodeRecordKey, OurEntryMap),
                             TheirNodeVVVersion =
                                 maps:get(OurNodeRecordKey, TheirVV, 0),
-                            %% io:format("OurNodeRecordKey: ~p~nOurNodeRecordVersion: ~p~nTheirNodeVVVersion: ~p~n",
-                            %%           [OurNodeRecordKey,
-                            %%            OurNodeRecordVersion,
-                            %%            TheirNodeVVVersion]),
                             case OurNodeRecordVersion > TheirNodeVVVersion of
                                 true ->
                                     %% belongs to subset M'
