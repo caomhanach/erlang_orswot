@@ -95,7 +95,6 @@ remove_entry(Entry, Node) ->
       Reason   :: term().
 merge(ThisNode, ThatNode) ->
     ThatData = call(ThatNode, get_data),
-    io:format("ThatData: ~p~n", [ThatData]),
     call(ThisNode, {merge, ThatData}).
 
 -spec get_data(Node) -> Result when
@@ -121,7 +120,7 @@ get_version_vector(Node) ->
 
 -spec reset(Node) -> Result when
       Node    :: atom(),
-      Result  :: node_data() | {error, Reason},
+      Result  :: ok | {error, Reason},
       Reason  :: term().
 reset(Node) ->
     call(Node, reset).
@@ -153,9 +152,6 @@ reset(Node) ->
       Timeout :: non_neg_integer(),
       Reason  :: term().
 init([{id, Id}, {nodes, Nodes}]) when is_atom(Id) ->
-    %% io:format("Id: ~p~n, self(): ~p~n", [Id, self()]),
-        process_flag(trap_exit, true),
-
     Tid = ets:new(?TABLE_NAME(Id)), [set]),
     VV = maps:new(),
     {ok,
@@ -186,11 +182,8 @@ init(Other) ->
       Reason   :: term().
 handle_call({add, Entry}, _From,
             #state{id=Id, tid=Tid, version_vector=VV}=State) ->
-    %% io:format("State: ~p~n", [State]),
     NewVV = add(Entry, Id, Tid, VV, ets:lookup(Tid, Entry)),
     NewState = State#state{version_vector=NewVV},
-    %% io:format("NewState: ~p~n", [NewState]),
-
     {reply, ok, NewState};
 handle_call({remove, Entry}, _From,
             #state{tid=Tid}=State) ->
@@ -201,7 +194,6 @@ handle_call({merge, #{version_vector := OtherVV,
             _From,
             #state{version_vector=VV, tid=Tid}=State) ->
     Entries = maps:from_list(ets:tab2list(Tid)),
-    %% io:format("Entries: ~p~n", [Entries]),
     NewVV = merge_int(OtherVV, OtherEntries, VV, Entries, Tid),
     {reply, ok, State#state{version_vector=NewVV}};
 handle_call(get_data, _From,
@@ -252,7 +244,6 @@ handle_cast(_Msg, State) ->
       Timeout  :: non_neg_integer() | infinity,
       Reason   :: term().
 handle_info(_Info, State) ->
-    %% io:format("Info: ~p~n", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -291,8 +282,6 @@ add(Entry, Id, Tid, VersionVector, []) when map_size(VersionVector) == 0 ->
     true = ets:insert(Tid, {Entry, [{Id, ?ENTRY_START_VERSION}]}),
     #{Id => ?VV_START_VERSION};
 add(Entry, Id, Tid, VersionVector, []) ->
-    %% io:format("Id : ~p~n", [Id]),
-    %% io:format("VersionVector: ~p~n", [VersionVector]),
     Version = maps:get(Id, VersionVector, 0),
     true = ets:insert(Tid, {Entry, [{Id, Version+1}]}),
     maps:update_with(Id, fun(X) -> X+1 end, ?VV_START_VERSION, VersionVector);
@@ -305,7 +294,8 @@ remove(Entry, Tid, _Existing) ->
     ets:delete(Tid, Entry).
 
 %% Merge algotrithm
-%% See figure 3 on page 7
+%% See figure 3 on page 7 here:
+%% https://arxiv.org/pdf/1210.3368v1.pdf
 %%
 %% merge (B)
 %% let M = (E ∩ B.E)
@@ -320,31 +310,18 @@ merge_int(OtherVV, OtherEntries, OtherVV, OtherEntries, _Tid) ->
     %% case 1: our data is identical to their data
     %% This includes the case where neither side
     %% has add/remove history (everything is empty)
-    io:format("merge_int, both identical~n"),
     OtherVV;
 merge_int(OtherVV, OtherEntries, OurVV, _OurEntries, Tid)
   when map_size(OurVV) == 0 ->
     %% case 2: we have no add/remove history, but they do
-    io:format("merge_int, empty us~n"),
-    io:format("OtherVV: ~p~n", [OtherVV]),
-    io:format("OtherEntries: ~p~n", [OtherEntries]),
     ets:insert(Tid, maps:to_list(OtherEntries)),
     OtherVV;
-merge_int(OtherVV, _OtherEntries, VV, Entries, _Tid)
+merge_int(OtherVV, _OtherEntries, VV, _Entries, _Tid)
   when map_size(OtherVV) == 0 ->
     %% case 3: they have no add/remove history, but we do
-    io:format("merge_int, empty incoming~n"),
-    io:format("Entries: ~p~n", [Entries]),
-    io:format("ThisVV: ~p~n", [VV]),
     VV;
 merge_int(OtherVV, OtherEntries, OurVV, OurEntries, Tid) ->
     %% case 4: both sides have different add/remove histories
-    io:format("merge_int~n"),
-    io:format("VV: ~p~n", [OurVV]),
-    io:format("OtherVV: ~p~n", [OtherVV]),
-    io:format("OtherEntries: ~p~n", [OtherEntries]),
-    io:format("Entries: ~p~n", [OurEntries]),
-
     OtherKeys = maps:keys(OtherEntries),
 
     %% First merge using their keys
@@ -353,12 +330,10 @@ merge_int(OtherVV, OtherEntries, OurVV, OurEntries, Tid) ->
     %% Next merge using keys we have that they don't
     Keys = maps:keys(OurEntries),
     DiffKeys = Keys -- OtherKeys,
-    %% io:format("DiffKeys: ~p~n", [DiffKeys]),
     merge_diff_keys(Tid, DiffKeys, OurEntries, OtherVV),
 
     %% Finally merge version vectors
     NewVV = merge_version_vectors(OurVV, OtherVV),
-    %% io:format("NewVV: ~p~n", [NewVV]),
     NewVV.
 
 merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
@@ -369,7 +344,6 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                   maps:from_list(maps:get(TheirEntryKey, TheirEntries)),
               OurEntryMap =
                   maps:from_list(maps:get(TheirEntryKey, OurEntries, [])),
-              %% io:format("OurEntryMap: ~p~n", [OurEntryMap]),
 
               %% Inner loop: each {node, version} record for this entry
               %% in TheirEntryMap
@@ -380,18 +354,14 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                                 maps:get(TheirNodeRecordKey, TheirEntryMap),
                             case maps:get(TheirNodeRecordKey, OurEntryMap, no_entry) of
                                 no_entry ->
-                                    %% io:format("TheirNodeRecordKey: ~p~n, OurEntryMap: ~p~n",
-                                    %% [TheirNodeRecordKey, OurEntryMap]),
                                     OurNodeVVVersion =
                                         maps:get(TheirNodeRecordKey, OurVV, 0),
-                                    %% io:format("TheirNodeRecordVersion: ~p~nOurNodeVVVersion: ~p~n", [TheirNodeRecordVersion, OurNodeVVVersion]),
                                     case TheirNodeRecordVersion > OurNodeVVVersion of
                                         true ->
                                             %% Either it's new on their side, or
                                             %% we removed it since we last merged, but they have re-added it
                                             %%
                                             %% These are entries in subset M'
-                                            %% io:format("putting: ~p~n", [{TheirNodeRecordKey, TheirNodeRecordVersion}]),
                                             maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
                                         false ->
                                             %% We removed it since we last merged, and they haven't re-added it
@@ -401,7 +371,6 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                                             InnerAccMap
                                     end;
                                 TheirNodeRecordVersion ->
-                                    %% io:format("identical~n"),
                                     %% We have an identical entry for this key
                                     %% These are entries in subset M
                                     maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
@@ -429,7 +398,6 @@ merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
                   false ->
                       %% This is a new, updated, or identical entry in our db
                       %% TODO avoid inserting identical entries
-                      %% io:format("inserting: ~p~n", [TheirEntryKey]),
                       ets:insert(Tid, {TheirEntryKey, maps:to_list(AccMap)})
               end
       end,
@@ -466,7 +434,6 @@ merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
                   true ->
                       ets:delete(Tid, OurEntryKey);
                   false ->
-                      %% io:format("inserting: ~p~n~p~n", [OurEntryKey, AccMap]),
                       %% TODO avoid inserting identical entries
                       ets:insert(Tid, {OurEntryKey, maps:to_list(AccMap)})
               end
@@ -481,11 +448,9 @@ merge_version_vectors(VV, OtherVV) ->
     Keys = maps:keys(VV),
     OtherKeys = maps:keys(OtherVV),
     NewVV1 = maps:from_list(compare_vv_values(Keys, VV, OtherVV)),
-    %% io:format("NewVV1: ~p~n", [NewVV1]),
-
     DiffKeys = OtherKeys -- Keys,
     NewVV2 = maps:with(DiffKeys, OtherVV),
-    %% io:format("NewVV2: ~p~n", [NewVV2]),
+
     maps:merge(NewVV1, NewVV2).
 
 compare_vv_values(Keys, VV, OtherVV) ->
@@ -504,8 +469,6 @@ compare_vv_values(Keys, VV, OtherVV) ->
       Keys).
 
 get_data_int(Tid, VV) ->
-    %% io:format("Tid: ~p~ndata: ~p~n", [Tid, maps:from_list(ets:tab2list(Tid))]),
-    %% [{version_vector, VV}, {entries, maps:from_list(ets:tab2list(Tid))}].
     #{version_vector => VV, entries => maps:from_list(ets:tab2list(Tid))}.
 
 get_entries_int(Tid) ->
