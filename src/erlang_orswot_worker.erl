@@ -400,35 +400,38 @@ merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
               OurEntryMap =
                   maps:from_list(maps:get(OurEntryKey, OurEntries)),
               AccMap =
-                  lists:foldl(
-                    fun(OurNodeRecordKey, InnerAccMap) ->
-                            OurNodeRecordVersion =
-                                maps:get(OurNodeRecordKey, OurEntryMap),
-                            TheirNodeVVVersion =
-                                maps:get(OurNodeRecordKey, TheirVV, 0),
-                            case OurNodeRecordVersion > TheirNodeVVVersion of
-                                true ->
-                                    %% belongs to subset M'
-                                    maps:put(OurNodeRecordKey,
-                                             OurNodeRecordVersion,
-                                             InnerAccMap);
-                                false ->
-                                    %% excluded from subset M'
-                                    InnerAccMap
-                            end
-                    end,
-                    maps:new(),
-                    maps:keys(OurEntryMap)),
-
-              case map_size(AccMap) == 0 of
-                  true ->
-                      ets:delete(Tid, OurEntryKey);
-                  false ->
-                      %% TODO avoid inserting identical entries
-                      ets:insert(Tid, {OurEntryKey, maps:to_list(AccMap)})
-              end
+                  build_diff_key_map(OurEntryMap, TheirVV),
+              true = handle_updated_diff_key(OurEntryKey, AccMap, Tid)
       end,
       DiffKeys).
+
+build_diff_key_map(OurEntryMap, TheirVV) ->
+    lists:foldl(
+      fun(OurNodeRecordKey, AccMap) ->
+              compare_diff_versions(
+                OurNodeRecordKey,
+                maps:get(OurNodeRecordKey, OurEntryMap),
+                maps:get(OurNodeRecordKey, TheirVV, 0),
+                AccMap)
+      end,
+      maps:new(),
+      maps:keys(OurEntryMap)).
+
+compare_diff_versions(OurNodeRecordKey,
+                      OurNodeRecordVersion,
+                      TheirNodeVVVersion,
+                      Map) when OurNodeRecordVersion > TheirNodeVVVersion ->
+    %% belongs to subset M'
+    maps:put(OurNodeRecordKey, OurNodeRecordVersion, Map);
+compare_diff_versions(_OurKey, _Ours, _Theirs, Map) ->
+    %% excluded from subset M'
+    Map.
+
+handle_updated_diff_key(Key, Map, Tid) when map_size(Map) =:= 0 ->
+    ets:delete(Tid, Key);
+handle_updated_diff_key(Key, Map, Tid) ->
+    %% TODO avoid inserting identical entries
+    ets:insert(Tid, {Key, maps:to_list(Map)}).
 
 merge_version_vectors(VV, OtherVV) ->
     %%
