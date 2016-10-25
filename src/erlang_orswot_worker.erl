@@ -444,19 +444,18 @@ merge_version_vectors(VV, OtherVV) ->
     maps:merge(NewVV1, NewVV2).
 
 compare_vv_values(Keys, VV, OtherVV) ->
-    lists:foldl(
-      fun(Key, Acc) ->
-              Val = maps:get(Key, VV),
-              OtherVal = maps:get(Key, OtherVV, 0),
-              case OtherVal > Val of
-                  true ->
-                      [{Key, OtherVal} | Acc];
-                  false ->
-                      [{Key, Val} | Acc]
-              end
-      end,
-      [],
-      Keys).
+    [compare_vv_value(Key,
+                      maps:get(Key, VV),
+                      maps:get(Key, OtherVV, 0)) ||
+     Key <- Keys].
+
+compare_vv_value(Key, Val, OtherVal) ->
+    {Key, choose_vv_val(OtherVal, Val)}.
+
+choose_vv_val(OtherVal, Val) when OtherVal > Val ->
+    OtherVal;
+choose_vv_val(_OtherVal, Val) ->
+    Val.
 
 get_data_int(Tid, VV) ->
     #{version_vector => VV, entries => maps:from_list(ets:tab2list(Tid))}.
