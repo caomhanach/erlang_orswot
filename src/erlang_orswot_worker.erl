@@ -323,84 +323,96 @@ merge_int(OtherVV, OtherEntries, OurVV, OurEntries, Tid) ->
     merge_diff_keys(Tid, DiffKeys, OurEntries, OtherVV),
 
     %% Finally merge version vectors
-    NewVV = merge_version_vectors(OurVV, OtherVV),
-    NewVV.
+    merge_version_vectors(OurVV, OtherVV).
 
 merge_their_keys(Tid, OurEntries, OurVV, TheirEntries) ->
     %% Outer loop: each entry in their db
     lists:foreach(
       fun(TheirEntryKey) ->
-              TheirEntryMap =
-                  maps:from_list(maps:get(TheirEntryKey, TheirEntries)),
-              OurEntryMap =
-                  maps:from_list(maps:get(TheirEntryKey, OurEntries, [])),
-
-              %% Inner loop: each {node, version} record for this entry
-              %% in TheirEntryMap
-              AccMap =
-                  lists:foldl(
-                    fun(TheirNodeRecordKey, InnerAccMap) ->
-                            TheirNodeRecordVersion =
-                                maps:get(TheirNodeRecordKey, TheirEntryMap),
-                            case maps:get(TheirNodeRecordKey, OurEntryMap, no_entry) of
-                                no_entry ->
-                                    OurNodeVVVersion =
-                                        maps:get(TheirNodeRecordKey, OurVV, 0),
-                                    case TheirNodeRecordVersion > OurNodeVVVersion of
-                                        true ->
-                                            %% Either it's new on their side, or
-                                            %% we removed it since we last merged, but they have re-added it
-                                            %%
-                                            %% These are entries in subset M'
-                                            maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
-                                        false ->
-                                            %% We removed it since we last merged, and they haven't re-added it
-                                            %%
-                                            %% These are entries on the lesser-than-or-equal-to
-                                            %% side of the inequality test for M'
-                                            InnerAccMap
-                                    end;
-                                TheirNodeRecordVersion ->
-                                    %% We have an identical entry for this key
-                                    %% These are entries in subset M
-                                    maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
-                                OurNodeRecordVersion ->
-                                    %% Same node, but different version
-                                    %% We will update if their version is a later one
-                                    case TheirNodeRecordVersion > OurNodeRecordVersion of
-                                        true ->
-                                            %% added to subset O
-                                            maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, InnerAccMap);
-                                        false ->
-                                            %% excluded from subset O
-                                            InnerAccMap
-                                    end
-                            end
-                    end,
-                    OurEntryMap,
-                    maps:keys(TheirEntryMap)),
-
-              %% Check if this entry is empty and if so, remove it from our db
-              case map_size(AccMap) == 0 of
-                  true ->
-                      %% This entry still doesn't exist in our db
-                      ok;
-                  false ->
-                      %% This is a new, updated, or identical entry in our db
-                      %% TODO avoid inserting identical entries
-                      ets:insert(Tid, {TheirEntryKey, maps:to_list(AccMap)})
-              end
+              handle_their_entry_key(TheirEntryKey,
+                                     maps:from_list(maps:get(TheirEntryKey, OurEntries, [])),
+                                     maps:from_list(maps:get(TheirEntryKey, TheirEntries)),
+                                     OurVV, Tid)
       end,
-
       maps:keys(TheirEntries)).
+
+handle_their_entry_key(TheirEntryKey, OurEntryMap, TheirEntryMap, OurVV, Tid) ->
+    %% Inner loop: each {node, version} record for this entry in TheirEntryMap
+    EntryAccMap =
+        lists:foldl(
+          fun(TheirNodeRecordKey, InnerAccMap) ->
+                  check_record_entries(
+                    maps:get(TheirNodeRecordKey, OurEntryMap, no_entry),
+                    maps:get(TheirNodeRecordKey, TheirEntryMap),
+                    TheirNodeRecordKey,
+                    OurVV,
+                    InnerAccMap)
+          end,
+          OurEntryMap,
+          maps:keys(TheirEntryMap)),
+
+    true = update_db_after_merge(EntryAccMap, TheirEntryKey, Tid).
+
+
+check_record_entries(no_entry, TheirNodeRecordVersion, TheirNodeRecordKey, OurVV, Map) ->
+    update_record_map_we_have_no_entry(TheirNodeRecordVersion,
+                                       TheirNodeRecordKey,
+                                       maps:get(TheirNodeRecordKey, OurVV, 0),
+                                       Map);
+check_record_entries(TheirNodeRecordVersion, TheirNodeRecordVersion, _TheirNodeRecordKey, _OurVV, Map) ->
+    %% We have an identical entry for this key
+    %% These are entries in subset M
+    Map;
+check_record_entries(OurNodeRecordVersion, TheirNodeRecordVersion, TheirNodeRecordKey, _OurVV, Map) ->
+    %% Same node, but different version
+    %% We will update if their version is a later one
+    update_record_map_we_have_different_node_version(TheirNodeRecordKey,
+                                                     TheirNodeRecordVersion,
+                                                     OurNodeRecordVersion,
+                                                     Map).
+
+update_record_map_we_have_no_entry(TheirNodeRecordVersion, TheirNodeRecordKey, OurNodeVVVersion, Map)
+  when TheirNodeRecordVersion > OurNodeVVVersion ->
+    %% Either it's new on their side, or
+    %% we removed it since we last merged, but they have re-added it
+    %%
+    %% These are entries in subset M'
+    maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, Map);
+update_record_map_we_have_no_entry(_TheirNodeRecordVersion, _TheirNodeRecordKey, _OurNodeVVVersion, Map) ->
+    %% We removed it since we last merged, and they haven't re-added it
+    %%
+    %% These are entries on the lesser-than-or-equal-to
+    %% side of the inequality test for M'
+    Map.
+
+update_record_map_we_have_different_node_version(TheirNodeRecordKey,
+                                          TheirNodeRecordVersion,
+                                          OurNodeRecordVersion,
+                                          Map)
+  when TheirNodeRecordVersion > OurNodeRecordVersion ->
+    %% added to subset O
+    maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, Map);
+update_record_map_we_have_different_node_version(_TheirNodeRecordKey, _TheirNodeRecordVersion, _OurNodeRecordVersion, Map) ->
+    %% excluded from subset O
+    Map.
+
+update_db_after_merge(Map, _Key, _Tid) when map_size(Map) =:= 0 ->
+    %% This entry still doesn't exist in our db
+    io:format("not inserting~n"),
+    true;
+update_db_after_merge(Map, Key, Tid) ->
+    %% This is a new, updated, or identical entry in our db
+    %% TODO avoid inserting identical entries
+    %% io:format("inserting~n"),
+    ets:insert(Tid, {Key, maps:to_list(Map)}).
 
 merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
     lists:foreach(
       fun(OurEntryKey) ->
-              OurEntryMap =
-                  maps:from_list(maps:get(OurEntryKey, OurEntries)),
               AccMap =
-                  build_diff_key_map(OurEntryMap, TheirVV),
+                  build_diff_key_map(
+                    maps:from_list(maps:get(OurEntryKey, OurEntries)),
+                    TheirVV),
               true = handle_updated_diff_key(OurEntryKey, AccMap, Tid)
       end,
       DiffKeys).
