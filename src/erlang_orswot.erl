@@ -334,84 +334,10 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
     OurDiffKeysAfter = OurKeysAfter -- TheirEntryKeys,
 
     %% First check their entries
-    CheckTheirAcc =
-        lists:foldl(
-          fun(TheirEntryKey, OuterAcc) ->
-                  TheirEntryMap =
-                      maps:from_list(maps:get(TheirEntryKey, Entries2_Before)),
-                  OurEntryMapBefore =
-                      maps:from_list(maps:get(TheirEntryKey, Entries1_Before, [])),
-                  OurEntryMapAfter =
-                      maps:from_list(maps:get(TheirEntryKey, Entries1_After, [])),
-
-                  %% Inner loop
-                  %% Check their record keys in our current entry map
-                  %% for each of their records:
-                  %%  - do we have it after the merge?
-                  %%    - if no, ensure our version vector version for the node before the merge
-                  %%        was greater than their node version for their record
-                  %%    - if yes, did we have it before the merge,
-                  %%      - if yes, ensure we didn't have a higher version before the merge
-                  %%      - if no, ensure their node version for the record
-                  %%          was greater than our version vector version for the node
-                  InnerAcc =
-                      lists:foldl(
-                        fun(TheirNodeRecordKey, Acc) ->
-                                TheirNodeRecordVersion =
-                                    maps:get(TheirNodeRecordKey, TheirEntryMap),
-                                OurNodeVVVersionBefore =
-                                    maps:get(TheirNodeRecordKey, OurVV_Before, 0),
-                                case maps:get(TheirNodeRecordKey, OurEntryMapAfter, no_entry) of
-                                    no_entry ->
-                                        case TheirNodeRecordVersion > OurNodeVVVersionBefore of
-                                            true ->
-                                                io:format("TheirNodeRecordVersion > OurNodeVVVersionBefore~n"),
-
-                                                %% Record was incorrectly omitted from subset M'
-                                                [false | Acc];
-                                            false ->
-                                                %% Record was correctly omitted from subset M'
-                                                Acc
-                                        end;
-                                    _OurNodeRecordVersionAfter ->
-                                        case maps:is_key(TheirNodeRecordKey, OurEntryMapBefore) of
-                                            true ->
-                                                %% We had this record before; compare record versions
-                                                OurNodeRecordVersionBefore =
-                                                    maps:get(TheirNodeRecordKey, OurEntryMapBefore),
-                                                case TheirNodeRecordVersion >= OurNodeRecordVersionBefore of
-                                                    true ->
-                                                        %% Record was correctly added to subset O
-                                                        Acc;
-                                                    false ->
-                                                        io:format("TheirNodeRecordVersion >= OurNodeRecordVersionBefore~n"),
-                                                        %% Record was incorrectly added to subset O
-                                                        [false | Acc]
-                                                end;
-
-                                            false ->
-                                                %% We didn't have this entry before; use VV version if present
-                                                OurNodeVVVersionBefore =
-                                                    maps:get(TheirNodeRecordKey, OurVV_Before, 0),
-                                                case TheirNodeRecordVersion > OurNodeVVVersionBefore of
-                                                    true ->
-                                                        %% Record was correctly added to subset O
-                                                        Acc;
-                                                    false ->
-                                                        io:format("TheirNodeRecordVersion > OurNodeVVVersionBefore~n"),
-                                                        %% Record was incorrectly added to subset O
-                                                        [false | Acc]
-                                                end
-                                        end
-                                end
-                        end,
-                        [],
-                        maps:keys(TheirEntryMap)),
-                  lists:append(InnerAcc, OuterAcc)
-          end,
-          [],
-          TheirEntryKeys),
-    false = lists:member(false, CheckTheirAcc),
+    false =
+        lists:member(false,
+                     check_their_entries(
+                       TheirEntryKeys, Entries1_Before, Entries1_After, Entries2_Before, OurVV_Before)),
 
     %% Next check entries we have after the merge that they don't
     CheckOurAcc =
@@ -456,6 +382,95 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
           OurDiffKeysAfter),
 
     false =:= lists:member(false, CheckOurAcc).
+
+check_their_entries(TheirEntryKeys, Entries1_Before, Entries1_After, Entries2_Before, OurVV_Before) ->
+    lists:foldl(
+      fun(TheirEntryKey, OuterAcc) ->
+              TheirEntryMap =
+                  maps:from_list(maps:get(TheirEntryKey, Entries2_Before)),
+              OurEntryMapBefore =
+                  maps:from_list(maps:get(TheirEntryKey, Entries1_Before, [])),
+              OurEntryMapAfter =
+                  maps:from_list(maps:get(TheirEntryKey, Entries1_After, [])),
+
+              %% Inner loop
+              %% Check their record keys in our current entry map
+              %% for each of their records:
+              %%  - do we have it after the merge?
+              %%    - if no, ensure our version vector version for the node before the merge
+              %%        was greater than their node version for their record
+              %%    - if yes, did we have it before the merge,
+              %%      - if yes, ensure we didn't have a higher version before the merge
+              %%      - if no, ensure their node version for the record
+              %%          was greater than our version vector version for the node
+              lists:append(
+                check_their_records(TheirEntryMap, OurVV_Before, OurEntryMapAfter, OurEntryMapBefore),
+                OuterAcc)
+      end,
+      [],
+      TheirEntryKeys).
+
+check_their_records(TheirEntryMap, OurVV_Before, OurEntryMapAfter, OurEntryMapBefore) ->
+    lists:foldl(
+      fun(TheirNodeRecordKey, Acc) ->
+              TheirNodeRecordVersion =
+                  maps:get(TheirNodeRecordKey, TheirEntryMap),
+              OurNodeVVVersionBefore =
+                  maps:get(TheirNodeRecordKey, OurVV_Before, 0),
+              check_their_record(maps:get(TheirNodeRecordKey,
+                                          OurEntryMapAfter,
+                                          no_entry),
+                                 TheirNodeRecordKey,
+                                 TheirNodeRecordVersion,
+                                 OurNodeVVVersionBefore,
+                                 OurEntryMapBefore,
+                                 Acc)
+      end,
+      [],
+      maps:keys(TheirEntryMap)).
+
+check_their_record(no_entry, _TheirNodeRecordKey, TheirNodeRecordVersion, OurNodeVVVersionBefore, _OurEntryMapBefore, Acc)
+  when TheirNodeRecordVersion > OurNodeVVVersionBefore ->
+    %% Record was incorrectly omitted from subset M'
+    [false | Acc];
+check_their_record(no_entry, _TheirNodeRecordKey, _TheirNodeRecordVersion, _OurNodeVVVersionBefore, _OurEntryMapBefore, Acc) ->
+    %% Record was correctly omitted from subset M'
+    Acc;
+check_their_record(_OurNodeRecordVersionAfter, TheirNodeRecordKey, TheirNodeRecordVersion, OurNodeVVVersionBefore, OurEntryMapBefore, Acc) ->
+    check_their_record_in(
+      maps:get(TheirNodeRecordKey, OurEntryMapBefore, no_entry),
+      TheirNodeRecordVersion,
+      OurNodeVVVersionBefore,
+      Acc).
+
+%% We didn't have this entry before; use VV version if present
+check_their_record_in(no_entry,
+                      TheirNodeRecordVersion,
+                      OurNodeVVVersionBefore,
+                      Acc)
+  when TheirNodeRecordVersion > OurNodeVVVersionBefore ->
+    %% Record was correctly added to subset O
+    Acc;
+check_their_record_in(no_entry,
+                      _TheirNodeRecordVersion,
+                      _OurNodeVVVersionBefore,
+                      Acc) ->
+    %% Record was incorrectly added to subset O
+    [false | Acc];
+
+%% We had this record before; compare record versions
+check_their_record_in(OurNodeRecordVersionBefore,
+                      TheirNodeRecordVersion,
+                      _OurNodeVVVersionBefore,
+                      Acc) when  TheirNodeRecordVersion >= OurNodeRecordVersionBefore ->
+    %% Record was correctly added to subset O
+    Acc;
+check_their_record_in(_OurNodeRecordVersionBefore,
+                      _TheirNodeRecordVersion,
+                      _OurNodeVVVersionBefore,
+                      Acc) ->
+    %% Record was incorrectly added to subset O
+    [false | Acc].
 
 check_version_vectors(VV1_Before,
                       VV2_Before,
