@@ -270,6 +270,59 @@ prop_merge_nodes_we_delete_entries() ->
                )
       ).
 
+prop_merge_nodes_they_delete_entries() ->
+    %% @see erlang_orswot_worker:merge_int
+    %% case 4: both sides have different add/remove histories
+    %% subcase:
+    %% 1. they add an entry
+    %% 2. we merge and pick up their entry
+    %% 3. they delete the entry
+    %% 4. we merge again - we should have removed the entry,
+    %%    unless we had records for it from one or more other nodes
+    application:stop(erlang_orswot),
+    ok = application:start(erlang_orswot),
+    ?FORALL(
+       {Entry1, Entry2, Node1, Node2},
+       {atom(), atom(),
+        lists:nth(1, ?NODES), lists:nth(2, ?NODES)},
+       ?IMPLIES(Entry1 /= Entry2,
+                begin
+                    ok = add_entry(Entry1, Node1),
+                    ok = add_entry(Entry2, Node2),
+
+                    ok = merge_nodes(Node1, Node2),
+
+                    ok = remove_entry(Entry2, Node2),
+
+                    #{version_vector := VV1_Before,
+                      entries := Entries1_Before} =
+                        get_data(Node1),
+                    #{version_vector := VV2_Before,
+                      entries := Entries2_Before} =
+                        get_data(Node2),
+
+                    ok = merge_nodes(Node1, Node2),
+
+                    #{version_vector := VV1_After,
+                      entries := Entries1_After} =
+                        get_data(Node1),
+                    #{version_vector := VV2_After,
+                      entries := Entries2_After} =
+                        get_data(Node2),
+
+                    true = check_entries(VV1_Before, VV2_Before,
+                                         Entries1_Before, Entries2_Before,
+                                         Entries1_After, Entries2_After),
+
+                    check_version_vectors(VV1_Before,
+                                          VV2_Before,
+                                          VV1_After,
+                                          VV2_After)
+                end
+               )
+      ).
+
+
 check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
               Entries1_After, Entries2_After) ->
 
@@ -312,6 +365,8 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
                                     no_entry ->
                                         case TheirNodeRecordVersion > OurNodeVVVersionBefore of
                                             true ->
+                                                io:format("TheirNodeRecordVersion > OurNodeVVVersionBefore~n"),
+
                                                 %% Record was incorrectly omitted from subset M'
                                                 [false | Acc];
                                             false ->
@@ -329,6 +384,7 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
                                                         %% Record was correctly added to subset O
                                                         Acc;
                                                     false ->
+                                                        io:format("TheirNodeRecordVersion >= OurNodeRecordVersionBefore~n"),
                                                         %% Record was incorrectly added to subset O
                                                         [false | Acc]
                                                 end;
@@ -342,6 +398,7 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
                                                         %% Record was correctly added to subset O
                                                         Acc;
                                                     false ->
+                                                        io:format("TheirNodeRecordVersion > OurNodeVVVersionBefore~n"),
                                                         %% Record was incorrectly added to subset O
                                                         [false | Acc]
                                                 end
@@ -367,7 +424,9 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
                   %% Check record entries for entries we have after that they don't
                   %% for each record entry:
                   %%   - ensure our node version for the record was greater
-                  %%     than their version vector version for the node
+                  %%     than their version vector version for the node;
+                  %%   - or else that we have other node records for this entry,
+                  %%     and that's why we still have the entry.
                   InnerDiffAcc =
                       lists:foldl(
                         fun(OurNodeRecordKey, InnerAcc) ->
@@ -380,8 +439,13 @@ check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
                                         %% correctly added to subset M'
                                         InnerAcc;
                                     false ->
-                                        %% incorrectly added to subset M'
-                                        [false | InnerAcc]
+                                        case maps:from_list(maps:get(OurDiffEntryKey, Entries1_After, [])) of
+                                            [] ->
+                                                %% incorrectly added to subset M'
+                                                [false | InnerAcc];
+                                            _OurEntryMapAfter ->
+                                                InnerAcc
+                                        end
                                 end
                         end,
                         [],
