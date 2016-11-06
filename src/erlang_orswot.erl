@@ -43,6 +43,11 @@ merge_nodes(Node1, Node2) ->
 reset_node(Node) ->
     erlang_orswot_worker:reset(Node).
 
+erlang_orswot_test() ->
+    proper:module(erlang_orswot).
+erlang_orswot_test(UserOpts) ->
+    proper:module(erlang_orswot, UserOpts).
+
 prop_add_entry_adds_entry() ->
     application:start(erlang_orswot),
     ?FORALL({Entry, Node}, {atom(), lists:nth(1, ?NODES)},
@@ -186,7 +191,7 @@ prop_merge_nodes_different_data() ->
         lists:nth(1, ?NODES), lists:nth(2, ?NODES)},
        ?IMPLIES(Entry1 /= Entry2,
                 begin
-                    %% ok = add_entry(Entry1, Node1),
+                    ok = add_entry(Entry1, Node1),
                     ok = add_entry(Entry2, Node2),
                     #{version_vector := VV1_Before,
                       entries := Entries1_Before} =
@@ -393,9 +398,4 @@ check_version_vectors(VV1_Before,
 
             OurDiffMapBefore =:= OurDiffMapAfter
     end.
-
-erlang_orswot_test() ->
-    proper:module(erlang_orswot).
-erlang_orswot_test(UserOpts) ->
-    proper:module(erlang_orswot, UserOpts).
 
