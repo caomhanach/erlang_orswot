@@ -279,9 +279,9 @@ add(_Entry, _Id, _Tid, VersionVector, _Existing) ->
     VersionVector.
 
 remove(_Entry, _Tid, []) ->
-    ok;
+    true;
 remove(Entry, Tid, _Existing) ->
-    ets:delete(Tid, Entry).
+    true = ets:delete(Tid, Entry).
 
 %% Merge algotrithm
 %% See figure 3 on page 7 here:
@@ -398,12 +398,10 @@ update_record_map_we_have_different_node_version(_TheirNodeRecordKey, _TheirNode
 
 update_db_after_merge(Map, _Key, _Tid) when map_size(Map) =:= 0 ->
     %% This entry still doesn't exist in our db
-    io:format("not inserting~n"),
     true;
 update_db_after_merge(Map, Key, Tid) ->
     %% This is a new, updated, or identical entry in our db
     %% TODO avoid inserting identical entries
-    %% io:format("inserting~n"),
     ets:insert(Tid, {Key, maps:to_list(Map)}).
 
 merge_diff_keys(Tid, DiffKeys, OurEntries, TheirVV) ->
