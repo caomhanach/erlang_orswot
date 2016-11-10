@@ -490,16 +490,16 @@ check_version_vectors(VV1_Before,
                               true ->
                                   ok;
                               false ->
-                                  erlang:error(bad_value_in_version_vector,
-                                               TheirVal)
+                                  erlang:error({bad_value_in_version_vector,
+                                               TheirVal})
                           end;
                       false ->
                           case OurValAfter =:= OurValBefore of
                               true ->
                                   ok;
                               false ->
-                                  erlang:error(bad_value_in_version_vector,
-                                               TheirVal)
+                                  erlang:error({bad_value_in_version_vector,
+                                               TheirVal})
                           end
                   end
           end,
