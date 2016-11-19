@@ -32,7 +32,7 @@ get_version_vector(Node) ->
     erlang_orswot_worker:get_version_vector(Node).
 
 merge() ->
-    [Node1, Node2, _Node3] = ?NODES,
+    [Node1, Node2 | _T] = ?NODES,
     merge_nodes(Node1, Node2),
     ok.
 
@@ -193,30 +193,7 @@ prop_merge_nodes_different_data() ->
                 begin
                     ok = add_entry(Entry1, Node1),
                     ok = add_entry(Entry2, Node2),
-                    #{version_vector := VV1_Before,
-                      entries := Entries1_Before} =
-                        get_data(Node1),
-                    #{version_vector := VV2_Before,
-                      entries := Entries2_Before} =
-                        get_data(Node2),
-
-                    ok = merge_nodes(Node1, Node2),
-
-                    #{version_vector := VV1_After,
-                      entries := Entries1_After} =
-                        get_data(Node1),
-                    #{version_vector := VV2_After,
-                      entries := Entries2_After} =
-                        get_data(Node2),
-
-                    ok = check_entries(VV1_Before, VV2_Before,
-                                         Entries1_Before, Entries2_Before,
-                                         Entries1_After, Entries2_After),
-
-                    check_version_vectors(VV1_Before,
-                                          VV2_Before,
-                                          VV1_After,
-                                          VV2_After)
+                    true = merge_and_check_data(Node1, Node2)
                 end)).
 
 prop_merge_nodes_we_delete_entries() ->
@@ -242,30 +219,7 @@ prop_merge_nodes_we_delete_entries() ->
 
                     ok = remove_entry(Entry2, Node1),
 
-                    #{version_vector := VV1_Before,
-                      entries := Entries1_Before} =
-                        get_data(Node1),
-                    #{version_vector := VV2_Before,
-                      entries := Entries2_Before} =
-                        get_data(Node2),
-
-                    ok = merge_nodes(Node1, Node2),
-
-                    #{version_vector := VV1_After,
-                      entries := Entries1_After} =
-                        get_data(Node1),
-                    #{version_vector := VV2_After,
-                      entries := Entries2_After} =
-                        get_data(Node2),
-
-                    ok = check_entries(VV1_Before, VV2_Before,
-                                         Entries1_Before, Entries2_Before,
-                                         Entries1_After, Entries2_After),
-
-                    check_version_vectors(VV1_Before,
-                                          VV2_Before,
-                                          VV1_After,
-                                          VV2_After)
+                    true = merge_and_check_data(Node1, Node2)
                 end
                )
       ).
@@ -294,34 +248,67 @@ prop_merge_nodes_they_delete_entries() ->
 
                     ok = remove_entry(Entry2, Node2),
 
-                    #{version_vector := VV1_Before,
-                      entries := Entries1_Before} =
-                        get_data(Node1),
-                    #{version_vector := VV2_Before,
-                      entries := Entries2_Before} =
-                        get_data(Node2),
-
-                    ok = merge_nodes(Node1, Node2),
-
-                    #{version_vector := VV1_After,
-                      entries := Entries1_After} =
-                        get_data(Node1),
-                    #{version_vector := VV2_After,
-                      entries := Entries2_After} =
-                        get_data(Node2),
-
-                    ok = check_entries(VV1_Before, VV2_Before,
-                                         Entries1_Before, Entries2_Before,
-                                         Entries1_After, Entries2_After),
-
-                    check_version_vectors(VV1_Before,
-                                          VV2_Before,
-                                          VV1_After,
-                                          VV2_After)
+                    true = merge_and_check_data(Node1, Node2)
                 end
                )
       ).
 
+prop_merge_multiple_nodes_different_data() ->
+    %% @see erlang_orswot_worker:merge_int
+    %% case 4: both sides have different add/remove histories
+    application:stop(erlang_orswot),
+    ok = application:start(erlang_orswot),
+    Pairs = pair(?NODES),
+    compare_nodes(Pairs),
+    compare_nodes([{B, A} || {A, B} <- Pairs]).
+
+compare_nodes([]) ->
+    true;
+compare_nodes([H | T]) ->
+    proper:quickcheck(proper:numtests(100, compare_node_pair(H))),
+    compare_nodes(T).
+
+compare_node_pair({Node1, Node2}) ->
+    ?FORALL(
+       {Entry1, Entry2},
+       {atom(), atom()},
+       ?IMPLIES(Entry1 /= Entry2,
+                begin
+                    %% mix things up a bit
+                    ok = add_entry(Entry1, Node1),
+                    ok = remove_entry(Entry1, Node1),
+                    ok = add_entry(Entry1, Node1),
+                    ok = add_entry(Entry1, Node2),
+                    ok = add_entry(Entry2, Node2),
+                    true = merge_and_check_data(Node1, Node2)
+                end)).
+
+merge_and_check_data(Node1, Node2) ->
+    #{version_vector := VV1_Before,
+      entries := Entries1_Before} =
+        get_data(Node1),
+    #{version_vector := VV2_Before,
+      entries := Entries2_Before} =
+        get_data(Node2),
+
+    ok = merge_nodes(Node1, Node2),
+
+    #{version_vector := VV1_After,
+      entries := Entries1_After} =
+        get_data(Node1),
+    #{version_vector := VV2_After,
+      entries := Entries2_After} =
+        get_data(Node2),
+
+    ok = check_entries(
+           VV1_Before, VV2_Before,
+           Entries1_Before, Entries2_Before,
+           Entries1_After, Entries2_After),
+
+    check_version_vectors(VV1_Before,
+                          VV2_Before,
+                          VV1_After,
+                          VV2_After).
 
 check_entries(OurVV_Before, TheirVV, Entries1_Before, Entries2_Before,
               Entries1_After, Entries2_After) ->
@@ -369,6 +356,8 @@ check_their_records(TheirEntryMap, OurVV_Before, OurEntryMapAfter, OurEntryMapBe
       fun(TheirNodeRecordKey) ->
               TheirNodeRecordVersion =
                   maps:get(TheirNodeRecordKey, TheirEntryMap),
+              OurNodeRecordVersionAfter =
+                  maps:get(TheirNodeRecordKey, OurEntryMapAfter, no_entry),
               OurNodeVVVersionBefore =
                   maps:get(TheirNodeRecordKey, OurVV_Before, 0),
               check_their_record(maps:get(TheirNodeRecordKey,
@@ -376,53 +365,87 @@ check_their_records(TheirEntryMap, OurVV_Before, OurEntryMapAfter, OurEntryMapBe
                                           no_entry),
                                  TheirNodeRecordKey,
                                  TheirNodeRecordVersion,
+                                 OurNodeRecordVersionAfter,
                                  OurNodeVVVersionBefore,
                                  OurEntryMapBefore)
       end,
       maps:keys(TheirEntryMap)).
 
-check_their_record(no_entry, _TheirNodeRecordKey, TheirNodeRecordVersion, OurNodeVVVersionBefore, _OurEntryMapBefore)
+%%
+%% We don't have this record after the merge
+%%
+check_their_record(no_entry, _TheirNodeRecordKey, TheirNodeRecordVersion, no_entry, OurNodeVVVersionBefore, _OurEntryMapBefore)
   when TheirNodeRecordVersion > OurNodeVVVersionBefore ->
-    %% Record was incorrectly omitted from subset M'
+    %% Record was incorrectly omitted from subset M''
     erlang:error({record_incorrectly_omitted_from_subset_m_prime,
                   {TheirNodeRecordVersion, OurNodeVVVersionBefore}});
-
-check_their_record(no_entry, _TheirNodeRecordKey, _TheirNodeRecordVersion, _OurNodeVVVersionBefore, _OurEntryMapBefore) ->
-    %% Record was correctly omitted from subset M'
+check_their_record(no_entry, _TheirNodeRecordKey, _TheirNodeRecordVersion, no_entry, _OurNodeVVVersionBefore, _OurEntryMapBefore) ->
+    %% Record was correctly omitted from subset M''
     ok;
-check_their_record(_OurNodeRecordVersionAfter, TheirNodeRecordKey, TheirNodeRecordVersion, OurNodeVVVersionBefore, OurEntryMapBefore) ->
+
+%%
+%% We do have this record after the merge
+%%
+check_their_record(_OurNodeRecordVersionAfter, TheirNodeRecordKey, TheirNodeRecordVersion,
+                   OurNodeRecordVersionAfter, OurNodeVVVersionBefore, OurEntryMapBefore) ->
     check_their_record_in(
       maps:get(TheirNodeRecordKey, OurEntryMapBefore, no_entry),
       TheirNodeRecordVersion,
+      OurNodeRecordVersionAfter,
       OurNodeVVVersionBefore).
 
-%% We didn't have this entry before; use VV version if present
+%% We have it now but didn't have this entry before;
+%% use VV version if present
 check_their_record_in(no_entry,
                       TheirNodeRecordVersion,
+                      _OurNodeRecordVersionAfter,
                       OurNodeVVVersionBefore)
   when TheirNodeRecordVersion > OurNodeVVVersionBefore ->
-    %% Record was correctly added to subset O
+    %% Record was correctly added to subset M''
     ok;
 check_their_record_in(no_entry,
                       TheirNodeRecordVersion,
+                      _OurNodeRecordVersionAfter,
                       OurNodeVVVersionBefore) ->
-    %% Record was incorrectly added to subset O
+    %% Record was incorrectly omitted from subset M''
     erlang:error({record_incorrectly_added_to_subset_o,
                   {TheirNodeRecordVersion, OurNodeVVVersionBefore}});
 
 %% We had this record before; compare record versions
 check_their_record_in(OurNodeRecordVersionBefore,
                       TheirNodeRecordVersion,
+                      TheirNodeRecordVersion,
                       _OurNodeVVVersionBefore)
-  when  TheirNodeRecordVersion >= OurNodeRecordVersionBefore ->
-    %% Record was correctly added to subset O
+  when TheirNodeRecordVersion >= OurNodeRecordVersionBefore ->
+    %% Record was correctly omitted from subset O (>),
+    %% or we had an identical entry (=)
+    %% Also validates that we have their node record version after the merge
     ok;
+check_their_record_in(OurNodeRecordVersionBefore,
+                      TheirNodeRecordVersion,
+                      OurNodeRecordVersionAfter,
+                      _OurNodeVVVersionBefore)
+  when TheirNodeRecordVersion >= OurNodeRecordVersionBefore ->
+    %% Record was correctly omitted from subset O (>),
+    %% or we had an identical entry (=),
+    %% BUT node record versions don't match after the merge
+    erlang:error(different_node_record_versions_mismatch,
+                 {TheirNodeRecordVersion, OurNodeRecordVersionAfter});
 check_their_record_in(_OurNodeRecordVersionBefore,
                       TheirNodeRecordVersion,
-                      OurNodeVVVersionBefore) ->
-    %% Record was incorrectly added to subset O
-    erlang:error({record_incorrectly_added_to_subset_o,
-                  {TheirNodeRecordVersion, OurNodeVVVersionBefore}}).
+                      TheirNodeRecordVersion,
+                      _OurNodeVVVersionBefore) ->
+    %% Record was incorrectly omitted from subset O
+    %% We have it with their version after the merge
+    erlang:error(identical_node_record_versions_mismatch,
+                 {TheirNodeRecordVersion, TheirNodeRecordVersion});
+check_their_record_in(_OurNodeRecordVersionBefore,
+                      _TheirNodeRecordVersion,
+                      _OurNodeRecordVersionAfter,
+                      _OurNodeVVVersionBefore) ->
+    %% Their version was less than ours before, and we still have a
+    %% different version after the merge
+    ok.
 
 check_our_diff_entries(Entries1_Before, Entries1_After, TheirVV, OurDiffKeysAfter) ->
     lists:foreach(
@@ -512,3 +535,20 @@ check_version_vectors(VV1_Before,
     OurDiffMapAfter = maps:without(TheirKeys, VV1_After),
 
     OurDiffMapBefore =:= OurDiffMapAfter.
+
+
+pair(List) ->
+    lists:flatten(pair_in(List, [])).
+
+pair_in([], Acc) ->
+    Acc;
+pair_in([H | T], Acc) ->
+    pair_in(T, [pair_node(H, T) | Acc]).
+
+pair_node(Node, List) ->
+    pair_node_in(Node, List, []).
+
+pair_node_in(_Node, [], Acc) ->
+    Acc;
+pair_node_in(Node, [H | T], Acc) ->
+    pair_node_in(Node, T, [{Node, H} | Acc]).

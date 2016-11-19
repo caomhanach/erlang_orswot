@@ -42,7 +42,6 @@
 -define(TIMEOUT, infinity). %% milliseconds | infinity
 -define(TABLE_NAME(Id), list_to_atom(atom_to_list(Id) ++ "_table").
 
-%% -type version_vector() :: map().
 -type version_vector() :: map().
 -type entries() :: map().
 -type node_data() :: #{version_vector := version_vector(),
@@ -361,7 +360,7 @@ check_record_entries(no_entry, TheirNodeRecordVersion, TheirNodeRecordKey, OurVV
                                        Map);
 check_record_entries(TheirNodeRecordVersion, TheirNodeRecordVersion, _TheirNodeRecordKey, _OurVV, Map) ->
     %% We have an identical entry for this key
-    %% These are entries in subset M
+    %% These are entries in subset M (but not subset O)
     Map;
 check_record_entries(OurNodeRecordVersion, TheirNodeRecordVersion, TheirNodeRecordKey, _OurVV, Map) ->
     %% Same node, but different version
@@ -376,24 +375,27 @@ update_record_map_we_have_no_entry(TheirNodeRecordVersion, TheirNodeRecordKey, O
     %% Either it's new on their side, or
     %% we removed it since we last merged, but they have re-added it
     %%
-    %% These are entries in subset M'
+    %% These are entries in subset M''
     maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, Map);
 update_record_map_we_have_no_entry(_TheirNodeRecordVersion, _TheirNodeRecordKey, _OurNodeVVVersion, Map) ->
     %% We removed it since we last merged, and they haven't re-added it
     %%
-    %% These are entries on the lesser-than-or-equal-to
-    %% side of the inequality test for M'
+    %% These are entries omitted from subset M''
     Map.
 
+%% The next 2 cases are entries in subset M (E ∩ B.E)
+%% We need to determine if they also belong in subset O,
+%% which contains entries with non-maximal node versions that will
+%% be discarded from the final E.
 update_record_map_we_have_different_node_version(TheirNodeRecordKey,
                                           TheirNodeRecordVersion,
                                           OurNodeRecordVersion,
                                           Map)
   when TheirNodeRecordVersion > OurNodeRecordVersion ->
-    %% added to subset O
+    %% Replace our entry (it's in subset O)
     maps:put(TheirNodeRecordKey, TheirNodeRecordVersion, Map);
 update_record_map_we_have_different_node_version(_TheirNodeRecordKey, _TheirNodeRecordVersion, _OurNodeRecordVersion, Map) ->
-    %% excluded from subset O
+    %% Keep our entry (theirs is added to subset O)
     Map.
 
 update_db_after_merge(Map, _Key, _Tid) when map_size(Map) =:= 0 ->
